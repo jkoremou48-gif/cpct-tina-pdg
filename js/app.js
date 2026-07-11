@@ -18,6 +18,7 @@ const state = {
   substitutionId: null,
   unsubscribers: [],
 };
+let creationEnCours = false;
 
 const screens = ["screen-loading", "screen-onboarding-entreprise", "screen-onboarding-pdg", "screen-login", "screen-dashboard"];
 function showScreen(id) {
@@ -33,6 +34,7 @@ async function demarrer() {
   }
 
   onAuthStateChanged(auth, async (user) => {
+    if (creationEnCours) return;
     if (user) {
       const userSnap = await getDoc(doc(db, "users", user.uid));
       if (userSnap.exists() && userSnap.data().role === "pdg") {
@@ -78,20 +80,30 @@ document.getElementById("form-pdg").addEventListener("submit", async (e) => {
   const nom = fd.get("nom").trim();
   const telephone = fd.get("telephone").trim();
 
+  creationEnCours = true;
   try {
     const cred = await createUserWithEmailAndPassword(auth, email, password);
     const codeParrain = genererCodeParrain("PDG");
-    await setDoc(doc(db, "users", cred.user.uid), {
+    const userData = {
       role: "pdg",
       nom, telephone, email,
       code_parrain: codeParrain,
       parrain_id: null,
       statut: "actif",
       date_creation: serverTimestamp(),
-    });
+    };
+    await setDoc(doc(db, "users", cred.user.uid), userData);
     notifier("Compte PDG créé avec succès.", "succes");
+    state.currentUser = { uid: cred.user.uid, ...userData };
+    creationEnCours = false;
+    lancerDashboard();
   } catch (err) {
     notifier("Erreur : " + err.message, "erreur");
+    if (auth.currentUser) {
+      try { await auth.currentUser.delete(); } catch (e2) { /* ignore */ }
+      try { await signOut(auth); } catch (e3) { /* ignore */ }
+    }
+    creationEnCours = false;
   }
 });
 
@@ -197,7 +209,9 @@ function renderCollecteurs() {
       </div>
     `;
   }).join("");
-}document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
+}
+
+document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
   const { action, uid, nom } = btn.dataset;
