@@ -30,7 +30,7 @@ const firebaseConfig = {
   appId: "1:525781235034:web:d0e97fd3b391b57a22ef63",
 };
 
-const TC = state.payments.filter((p) => p.jour_numero === 1).reduce((s, p) => s + Number(p.montant || 0), 0);
+const app = initializeApp(firebaseConfig, "pdg");
 const auth = getAuth(app);
 const db = getFirestore(app);
 
