@@ -1,10 +1,22 @@
 {
   "name": "CPCT-TINA — Espace PDG",
   "short_name": "CPCT-TINA PDG",
-  "description": "Application de gestion pour le PDG de la tontine CPCT-TINA",
+  "description": "Application de gestion pour le PDG",
   "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#14213D",
   "theme_color": "#14213D",
-  "orientation": "portrait"
-}
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]        
+}     
