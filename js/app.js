@@ -169,9 +169,9 @@ function render() {
   renderApercu();
   renderCollecteurs();
   renderMembres();
+  renderConfirmations();
   renderMembresEnAttente();
 }
-
 function renderApercu() {
   const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
@@ -529,5 +529,50 @@ async function genererEtAfficherCode(type) {
   `);
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
 }
+function renderConfirmations() {
+  const container = document.getElementById("liste-confirmations");
+  if (!container) return;
 
+  const enAttente = state.payments.filter((p) => p.statut === "collecte");
+
+  if (enAttente.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun versement en attente de confirmation.</p>`;
+    return;
+  }
+
+  container.innerHTML = enAttente.map((p) => {
+    const membre = state.users.find((u) => u.uid === p.membre_id);
+    const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+    return `
+      <div class="entity-card" data-id="${p.id}">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+            <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+          </div>
+          <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+        </div>
+        <div class="entity-actions">
+          <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Confirmer</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+document.getElementById("liste-confirmations")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-action='confirmer']");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  try {
+    await updateDoc(doc(db, "payments", id), {
+      statut: "confirme",
+      date_confirmation: serverTimestamp(),
+    });
+    notifier("Versement confirmé.", "succes");
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur : " + err.message, "erreur");
+  }
+});
 demarrer();
