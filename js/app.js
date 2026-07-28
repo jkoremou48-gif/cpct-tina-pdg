@@ -286,14 +286,17 @@ function renderMembres() {  let membres = state.users.filter((u) => u.role === "
     const statutContrat = contrat ? contrat.statut : "aucun contrat";
     return `
       <div class="entity-card" data-uid="${m.uid}">
-        <div class="entity-card-top">
-          <div>
-            <p class="entity-nom">${m.nom}</p>
-            <p class="entity-sub">${m.telephone} · ${statutContrat}</p>
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${m.nom}</p>
+              <p class="entity-sub">${m.telephone} · ${statutContrat}</p>
+            </div>
+            <span class="badge badge-actif">${formatGNF(totalVerse)}</span>
           </div>
-          <span class="badge badge-actif">${formatGNF(totalVerse)}</span>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="supprimer-membre" data-uid="${m.uid}" data-nom="${m.nom}">Supprimer</button>
+          </div>
         </div>
-      </div>
     `;
   }).join("");
 }
@@ -301,6 +304,29 @@ function renderMembres() {  let membres = state.users.filter((u) => u.role === "
 document.getElementById("recherche-membres").addEventListener("input", renderMembres);
 
 document.getElementById("liste-membres").addEventListener("click", (e) => {
+  const btnSupprimer = e.target.closest("button[data-action='supprimer-membre']");
+  if (btnSupprimer) {
+    const { uid, nom } = btnSupprimer.dataset;
+    ouvrirModalConfirmation(
+      `Supprimer ${nom} ?`,
+      "Le compte sera désactivé et le membre ne pourra plus se connecter. L'historique de ses versements reste conservé.",
+      async () => {
+        try {
+          await updateDoc(doc(db, "users", uid), { statut: "supprime" });
+          const contratActif = state.contracts.find((c) => c.membre_id === uid && c.statut === "actif");
+          if (contratActif) {
+            await updateDoc(doc(db, "contracts", contratActif.id), { statut: "annule" });
+          }
+          notifier("Membre supprimé.", "succes");
+          fermerModal();
+        } catch (err) {
+          console.error(err);
+          notifier("Erreur : " + err.message, "erreur");
+        }
+      }
+    );
+    return;
+  }
   const card = e.target.closest(".entity-card");
   if (!card) return;
   afficherDetailMembre(card.dataset.uid);
