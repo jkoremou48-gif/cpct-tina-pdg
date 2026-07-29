@@ -338,7 +338,7 @@ function renderMembres() {  let membres = state.users.filter((u) => u.role === "
     const contrat = state.contracts.find((c) => c.membre_id === m.uid && c.statut === "actif")
       || state.contracts.filter((c) => c.membre_id === m.uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""))[0];
     const versements = state.payments.filter((p) => contrat && p.contract_id === contrat.id);
-    const totalVerse = versements.filter((p) => p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+    const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
     const statutContrat = contrat ? contrat.statut : "aucun contrat";
     return `
       <div class="entity-card" data-uid="${m.uid}">
@@ -393,7 +393,7 @@ function afficherDetailMembre(uid) {
   const contrats = state.contracts.filter((c) => c.membre_id === uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""));
   const contrat = contrats[0];
   const versements = contrat ? state.payments.filter((p) => p.contract_id === contrat.id).sort((a, b) => a.jour_numero - b.jour_numero) : [];
-  const totalVerse = versements.filter((p) => p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
 
   const html = `
     <h2>${membre.nom}</h2>
