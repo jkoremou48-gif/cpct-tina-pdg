@@ -162,7 +162,18 @@ function lancerDashboard() {
       .filter((m) => m.statut === "en_attente_validation");
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente);
+ const unsubRetraits = onSnapshot(
+    query(collection(db, "withdrawalRequests"), where("statut", "==", "en_attente")),
+    (snap) => {
+      state.retraits = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
+    state.prets = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets);
 }
 
 function render() {
@@ -171,6 +182,7 @@ function render() {
   renderMembres();
   renderConfirmations();
   renderMembresEnAttente();
+  renderRetraits();
 }
 function renderApercu() {
   const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
@@ -656,5 +668,83 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
     console.error(err);
     notifier("Erreur : " + err.message, "erreur");
   }
+});function renderRetraits() {
+  const container = document.getElementById("liste-retraits");
+  if (!container) return;
+
+  if (state.retraits.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune demande de retrait en attente.</p>`;
+    return;
+  }
+
+  container.innerHTML = state.retraits.map((r) => {
+    const membre = state.users.find((u) => u.uid === r.memberId);
+    return `
+      <div class="entity-card" data-id="${r.id}">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
+            <p class="entity-sub">Demande de retrait</p>
+          </div>
+          <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
+        </div>
+        <div class="entity-actions">
+          <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">Traiter</button>
+        </div>
+      </div>
+    `;
+  }).join("");
+}
+
+document.getElementById("liste-retraits")?.addEventListener("click", (e) => {
+  const btn = e.target.closest("button[data-action='traiter-retrait']");
+  if (!btn) return;
+  traiterRetrait(btn.dataset.id);
 });
+
+async function traiterRetrait(demandeId) {
+  const demande = state.retraits.find((r) => r.id === demandeId);
+  if (!demande) return;
+
+  const contrat = state.contracts.find((c) => c.membre_id === demande.memberId && c.statut === "actif");
+  if (!contrat) {
+    notifier("Aucun contrat actif trouvé pour ce membre.", "erreur");
+    return;
+  }
+
+  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
+  const totalVerseConfirme = versements
+    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
+    .reduce((s, p) => s + Number(p.montant || 0), 0);
+  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
+  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+  const epargneNette = totalVerseConfirme - totalPretsEnCours;
+
+  if (demande.montant < epargneNette) {
+    try {
+      await addDoc(collection(db, "prets"), {
+        membre_id: demande.memberId,
+        contract_id: contrat.id,
+        collecteur_id: contrat.collecteur_id,
+        montant_initial: demande.montant,
+        date_debut: serverTimestamp(),
+        taux_hebdo: 0.02,
+        statut: "actif",
+      });
+      await updateDoc(doc(db, "withdrawalRequests", demande.id), {
+        statut: "confirme",
+        resultat: "pret",
+        epargne_nette_au_traitement: epargneNette,
+        date_confirmation: serverTimestamp(),
+      });
+      notifier(`Retrait de ${formatGNF(demande.montant)} confirmé — converti en prêt à 2%/semaine. Contrat maintenu.`, "succes");
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+    return;
+  }
+
+  notifier("Ce cas (retrait = ou > épargne nette) sera géré à l'étape suivante.", "erreur");
+}
 demarrer();
