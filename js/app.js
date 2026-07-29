@@ -313,74 +313,7 @@ async function reassignerClientsCollecteur(ancienCollecteurId, nouveauCollecteur
     await updateDoc(doc(db, "payments", paiement.id), { collecteur_id: nouvelUid });
   }
 }
-    ouvrirSuppressionCollecteur(uid, nom);
-  }
-});
-
-function ouvrirSuppressionCollecteur(collecteurId, nom) {
-  const autresCollecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime" && u.uid !== collecteurId);
-  const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === collecteurId).length;
-
-  ouvrirModal(`
-    <h2>Supprimer ${nom} ?</h2>
-    <p class="subtitle-sm">${nbClients} client(s) seront transférés. Le compte sera désactivé et le collecteur ne pourra plus se connecter.</p>
-    <div class="field-row">
-      <label>Transférer ses clients vers</label>
-      <select name="destination" id="select-destination-clients">
-        <option value="pdg">Moi-même (portefeuille PDG)</option>
-        ${autresCollecteurs.map((c) => `<option value="${c.uid}">${c.nom}</option>`).join("")}
-      </select>
-    </div>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
-      <button type="button" class="btn btn-danger" id="modal-confirmer-suppression" style="flex:1;">Confirmer la suppression</button>
-    </div>
-  `);
-  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
-  document.getElementById("modal-confirmer-suppression").addEventListener("click", async () => {
-    const destinationId = document.getElementById("select-destination-clients").value;
-    try {
-      await reassignerClientsCollecteur(collecteurId, destinationId);
-      await updateDoc(doc(db, "users", collecteurId), { statut: "supprime" });
-      notifier("Collecteur supprimé et clients transférés.", "succes");
-      fermerModal();
-    } catch (err) {
-      console.error(err);
-      notifier("Erreur : " + err.message, "erreur");
-    }
-  });
-}
-
-async function reassignerClientsCollecteur(ancienCollecteurId, nouveauCollecteurId) {
-  const nouvelUid = nouveauCollecteurId === "pdg" ? state.currentUser.uid : nouveauCollecteurId;
-
-  const membres = state.users.filter((u) => u.role === "membre" && u.parrain_id === ancienCollecteurId);
-  for (const membre of membres) {
-    await updateDoc(doc(db, "users", membre.uid), { parrain_id: nouvelUid });
-  }
-
-  const contrats = state.contracts.filter((c) => c.collecteur_id === ancienCollecteurId);
-  for (const contrat of contrats) {
-    await updateDoc(doc(db, "contracts", contrat.id), { collecteur_id: nouvelUid });
-  }
-
-  const paiements = state.payments.filter((p) => p.collecteur_id === ancienCollecteurId);
-  for (const paiement of paiements) {
-    await updateDoc(doc(db, "payments", paiement.id), { collecteur_id: nouvelUid });
-  }
-}
-      }
-    );
-  }
-  if (action === "substituer") {
-    state.substitutionId = uid;
-    document.getElementById("banner-substitution").classList.remove("hidden");
-    document.getElementById("banner-substitution-text").textContent = `Mode substitution actif — vous gérez les clients de ${nom}.`;
-    document.querySelector('.tab-btn[data-tab="membres"]').click();
-    renderMembres();
-  }
-});
-
+    
 document.getElementById("btn-quitter-substitution").addEventListener("click", () => {
   state.substitutionId = null;
   document.getElementById("banner-substitution").classList.add("hidden");
