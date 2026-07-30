@@ -745,6 +745,30 @@ async function traiterRetrait(demandeId) {
     return;
   }
 
-  notifier("Ce cas (retrait = ou > épargne nette) sera géré à l'étape suivante.", "erreur");
+  if (demande.montant === epargneNette) {
+    try {
+      await updateDoc(doc(db, "contracts", contrat.id), { statut: "cloture" });
+      await addDoc(collection(db, "propositions_reconduction"), {
+        membre_id: demande.memberId,
+        ancien_contrat_id: contrat.id,
+        nouveau_montant_mise: null,
+        statut: "en_attente",
+        date_creation: serverTimestamp(),
+      });
+      await updateDoc(doc(db, "withdrawalRequests", demande.id), {
+        statut: "confirme",
+        resultat: "cloture_contrat",
+        epargne_nette_au_traitement: epargneNette,
+        date_confirmation: serverTimestamp(),
+      });
+      notifier("Retrait confirmé. Contrat clôturé — une proposition de reconduction a été envoyée au membre.", "succes");
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+    return;
+  }
+
+  notifier("Montant supérieur à l'épargne nette actuelle — ce retrait ne devrait pas être possible.", "erreur");
 }
 demarrer();
