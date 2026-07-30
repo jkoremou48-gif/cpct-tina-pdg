@@ -18,6 +18,9 @@ const state = {
   decaissements: [],
   membresEnAttente: [],
   substitutionId: null,
+  prets: [],
+  remboursements: [],
+  collecteurSelectionne: null,
   unsubscribers: [],
 };
 let creationEnCours = false;
@@ -173,6 +176,10 @@ const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
     state.prets = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
+  const unsubRemboursements = onSnapshot(collection(db, "remboursements_prets"), (snap) => {
+    state.remboursements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
   state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets);
 }
 
@@ -225,7 +232,7 @@ function renderCollecteurs() {
       <div class="entity-card" data-uid="${c.uid}">
         <div class="entity-card-top">
           <div>
-            <p class="entity-nom">${c.nom}</p>
+            <p class="entity-nom" style="cursor:pointer; text-decoration:underline;" data-action="voir-membres" data-uid="${c.uid}">${c.nom}</p>
             <p class="entity-sub">${c.telephone} · ${nbClients} client(s)</p>
           </div>
           <span class="badge ${badgeClasse}">${c.statut}</span>
@@ -242,6 +249,13 @@ function renderCollecteurs() {
 }
 
 document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
+  const nomCliquable = e.target.closest("[data-action='voir-membres']");
+    if (nomCliquable) {
+      state.collecteurSelectionne = nomCliquable.dataset.uid;
+      document.querySelector('.tab-btn[data-tab="membres"]').click();
+      renderMembres();
+      return;
+    }
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
   const { action, uid, nom } = btn.dataset;
@@ -332,15 +346,34 @@ document.getElementById("btn-quitter-substitution").addEventListener("click", ()
   renderMembres();
 });
 
-function renderMembres() {  let membres = state.users.filter((u) => u.role === "membre");
+function renderMembres() {
+  let membres = state.users.filter((u) => u.role === "membre");
   if (state.substitutionId) {
     membres = membres.filter((m) => m.parrain_id === state.substitutionId);
+  } else if (state.collecteurSelectionne) {
+    membres = membres.filter((m) => m.parrain_id === state.collecteurSelectionne);
   }
   const recherche = (document.getElementById("recherche-membres").value || "").toLowerCase();
   if (recherche) {
     membres = membres.filter((m) => m.nom.toLowerCase().includes(recherche) || (m.telephone || "").includes(recherche));
   }
 
+  const enteteContainer = document.getElementById("entete-membres");
+  if (enteteContainer) {
+    if (state.collecteurSelectionne && !state.substitutionId) {
+      const collecteur = state.users.find((u) => u.uid === state.collecteurSelectionne);
+      enteteContainer.innerHTML = `
+        <button class="btn btn-ghost-sm" id="btn-retour-collecteurs" style="margin-bottom:10px;">← Retour aux collecteurs</button>
+        <p style="font-weight:bold; margin-bottom:8px;">Membres de ${collecteur ? collecteur.nom : ""}</p>
+      `;
+      document.getElementById("btn-retour-collecteurs").addEventListener("click", () => {
+        state.collecteurSelectionne = null;
+        renderMembres();
+      });
+    } else {
+      enteteContainer.innerHTML = "";
+    }
+  }
   const container = document.getElementById("liste-membres");
   if (membres.length === 0) {
     container.innerHTML = `<p class="empty-state">Aucun membre trouvé.</p>`;
