@@ -346,6 +346,15 @@ document.getElementById("btn-quitter-substitution").addEventListener("click", ()
   renderMembres();
 });
 
+function calculerMontantDuPret(pret) {
+  const dateDebut = pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : new Date();
+  const nbSemaines = Math.floor((new Date() - dateDebut) / (1000 * 60 * 60 * 24 * 7));
+  const montantDuBrut = pret.montant_initial * (1 + pret.taux_hebdo * nbSemaines);
+  const dejaRembourse = (state.remboursements || [])
+    .filter((r) => r.pret_id === pret.id)
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  return Math.max(0, montantDuBrut - dejaRembourse);
+}
 function renderMembres() {
   let membres = state.users.filter((u) => u.role === "membre");
   if (state.substitutionId) {
@@ -383,18 +392,21 @@ function renderMembres() {
     const contrat = state.contracts.find((c) => c.membre_id === m.uid && c.statut === "actif")
       || state.contracts.filter((c) => c.membre_id === m.uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""))[0];
     const versements = state.payments.filter((p) => contrat && p.contract_id === contrat.id);
-    const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+    const totalVerse = versements.filter((p) => p.statut === "confirme" && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
     const statutContrat = contrat ? contrat.statut : "aucun contrat";
+    const pret = contrat ? (state.prets || []).find((p) => p.contract_id === contrat.id && p.statut === "actif") : null;
     return `
       <div class="entity-card" data-uid="${m.uid}">
           <div class="entity-card-top">
             <div>
               <p class="entity-nom">${m.nom}</p>
               <p class="entity-sub">${m.telephone} · ${statutContrat}</p>
+              ${pret ? `<p class="entity-sub" style="color:#c0392b;">Prêt en cours : ${formatGNF(calculerMontantDuPret(pret))}</p>` : ""}
             </div>
             <span class="badge badge-actif">${formatGNF(totalVerse)}</span>
           </div>
           <div class="entity-actions">
+            ${pret ? `<button class="btn btn-secondary btn-sm" data-action="rembourser-pret" data-pret="${pret.id}">Rembourser prêt</button>` : ""}
             <button class="btn btn-danger btn-sm" data-action="supprimer-membre" data-uid="${m.uid}" data-nom="${m.nom}">Supprimer</button>
           </div>
         </div>
