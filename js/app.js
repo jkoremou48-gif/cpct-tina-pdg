@@ -724,96 +724,391 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
 
   container.innerHTML = state.retraits.map((r) => {
     const membre = state.users.find((u) => u.uid === r.memberId);
+import {
+  auth, db, onAuthStateChanged, signInWithEmailAndPassword,
+  createUserWithEmailAndPassword, signOut, doc, getDoc, setDoc, updateDoc,
+  addDoc, collection, query, where, onSnapshot, serverTimestamp,
+  creerCompteSecondaire,
+} from "./firebase-config.js";
+
+import {
+  genererCodeParrain, formatGNF, formatDate, nomMois, calculerSoldes, notifier, calculerStatutContrat,
+} from "./utils.js";
+
+const state = {
+  entreprise: null,
+  currentUser: null,
+  users: [],
+  contracts: [],
+  payments: [],
+  decaissements: [],
+  membresEnAttente: [],
+  substitutionId: null,
+  prets: [],
+  remboursements: [],
+  collecteurSelectionne: null,
+  unsubscribers: [],
+};
+let creationEnCours = false;
+
+// --- Convertit un numéro de téléphone en "email technique" pour Firebase Auth ---
+// Le membre se connecte avec son numéro de téléphone, pas un email. On construit
+// en interne un email fictif à partir des chiffres du téléphone (jamais montré
+// au membre) pour satisfaire l'API Firebase Auth email/password.
+function telephoneVersEmailTechnique(telephone) {
+  const chiffres = telephone.replace(/\D/g, "");
+  return `${chiffres}@membre.cpct-tina.local`;
+}
+
+const screens = ["screen-loading", "screen-onboarding-entreprise", "screen-onboarding-pdg", "screen-login", "screen-dashboard"];
+function showScreen(id) {
+  screens.forEach((s) => document.getElementById(s).classList.toggle("hidden", s !== id));
+}
+
+async function demarrer() {
+  showScreen("screen-loading");
+  const entrepriseSnap = await getDoc(doc(db, "entreprise", "info"));
+  if (entrepriseSnap.exists()) {
+    state.entreprise = entrepriseSnap.data();
+    document.getElementById("login-entreprise-nom").textContent = state.entreprise.nom;
+  }
+
+  onAuthStateChanged(auth, async (user) => {
+    if (creationEnCours) return;
+    if (user) {
+      const userSnap = await getDoc(doc(db, "users", user.uid));
+      if (userSnap.exists() && userSnap.data().role === "pdg") {
+        state.currentUser = { uid: user.uid, ...userSnap.data() };
+        lancerDashboard();
+        return;
+      } else {
+        await signOut(auth);
+      }
+    }
+    if (state.entreprise) {
+      showScreen("screen-login");
+    } else {
+      showScreen("screen-onboarding-entreprise");
+    }
+  });
+}
+
+document.getElementById("form-entreprise").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const data = {
+    nom: fd.get("nom").trim(),
+    siege: fd.get("siege").trim(),
+    date_creation: fd.get("date_creation"),
+    fondateur: fd.get("fondateur").trim(),
+    contact: fd.get("contact").trim(),
+  };
+  try {
+    await setDoc(doc(db, "entreprise", "info"), data);
+    state.entreprise = data;
+    showScreen("screen-onboarding-pdg");
+  } catch (err) {
+    notifier("Erreur lors de la création de l'entreprise : " + err.message, "erreur");
+  }
+});
+
+document.getElementById("form-pdg").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const email = fd.get("email").trim();
+  const password = fd.get("password");
+  const nom = fd.get("nom").trim();
+  const telephone = fd.get("telephone").trim();
+
+  creationEnCours = true;
+  try {
+    const cred = await createUserWithEmailAndPassword(auth, email, password);
+    const codeParrain = genererCodeParrain("PDG");
+    const userData = {
+      role: "pdg",
+      nom, telephone, email,
+      code_parrain: codeParrain,
+      parrain_id: null,
+      statut: "actif",
+      date_creation: serverTimestamp(),
+    };
+    await setDoc(doc(db, "users", cred.user.uid), userData);
+    notifier("Compte PDG créé avec succès.", "succes");
+    state.currentUser = { uid: cred.user.uid, ...userData };
+    creationEnCours = false;
+    lancerDashboard();
+  } catch (err) {
+    notifier("Erreur : " + err.message, "erreur");
+    if (auth.currentUser) {
+      try { await auth.currentUser.delete(); } catch (e2) { /* ignore */ }
+      try { await signOut(auth); } catch (e3) { /* ignore */ }
+    }
+    creationEnCours = false;
+  }
+});
+
+document.getElementById("form-login").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  try {
+    await signInWithEmailAndPassword(auth, fd.get("email").trim(), fd.get("password"));
+  } catch (err) {
+    notifier("Identifiants incorrects.", "erreur");
+  }
+});
+
+document.getElementById("btn-logout").addEventListener("click", async () => {
+  state.unsubscribers.forEach((u) => u());
+  state.unsubscribers = [];
+  await signOut(auth);
+  showScreen("screen-login");
+});
+
+function lancerDashboard() {
+  showScreen("screen-dashboard");
+  document.getElementById("db-entreprise-nom").textContent = state.entreprise?.nom || "CPCT-TINA";
+  document.getElementById("db-pdg-nom").textContent = state.currentUser.nom;
+
+  const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
+    state.users = snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
+    render();
+  });
+  const unsubContracts = onSnapshot(collection(db, "contracts"), (snap) => {
+    state.contracts = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubPayments = onSnapshot(collection(db, "payments"), (snap) => {
+    state.payments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubDecaissements = onSnapshot(collection(db, "decaissements"), (snap) => {
+    state.decaissements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubAttente = onSnapshot(collection(db, "membres_en_attente_validation"), (snap) => {
+    state.membresEnAttente = snap.docs
+      .map((d) => ({ id: d.id, ...d.data() }))
+      .filter((m) => m.statut === "en_attente_validation");
+    render();
+  });
+ const unsubRetraits = onSnapshot(
+    query(collection(db, "withdrawalRequests"), where("statut", "==", "en_attente")),
+    (snap) => {
+      state.retraits = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      render();
+    }
+  );
+const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
+    state.prets = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubRemboursements = onSnapshot(collection(db, "remboursements_prets"), (snap) => {
+    state.remboursements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets);
+}
+
+function render() {
+  renderApercu();
+  renderCollecteurs();
+  renderMembres();
+  renderConfirmations();
+  renderMembresEnAttente();
+  renderRetraits();
+}
+function renderApercu() {
+  const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
+  const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
+  const commissionsDisponibles = totalCommissions - totalDecaisse;
+
+  document.getElementById("stat-total-epargnes").textContent = formatGNF(totalEpargnes);
+  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionsDisponibles);
+  document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
+  document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
+
+  const cles = Object.keys(parMois).sort().reverse();
+  const container = document.getElementById("monthly-breakdown");
+  if (cles.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune donnée pour le moment.</p>`;
+  } else {
+    container.innerHTML = cles.slice(0, 12).map((cle) => `
+      <div class="monthly-row">
+        <span class="monthly-mois">${nomMois(cle)}</span>
+        <span class="monthly-detail">
+          Épargnes : <b class="epargne">${formatGNF(parMois[cle].epargnes)}</b><br/>
+          Commissions : <b class="commission">${formatGNF(parMois[cle].commissions)}</b>
+        </span>
+      </div>
+    `).join("");
+  }
+}
+
+function renderCollecteurs() {
+  const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const container = document.getElementById("liste-collecteurs");
+  if (collecteurs.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré. Générez un code pour en inviter un.</p>`;
+    return;
+  }
+  container.innerHTML = collecteurs.map((c) => {
+    const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === c.uid).length;
+    const badgeClasse = c.statut === "actif" ? "badge-actif" : c.statut === "suspendu" ? "badge-suspendu" : "badge-licencie";
     return `
-      <div class="entity-card" data-id="${r.id}">
+      <div class="entity-card" data-uid="${c.uid}">
         <div class="entity-card-top">
           <div>
-            <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
-            <p class="entity-sub">Demande de retrait</p>
+            <p class="entity-nom" style="cursor:pointer; text-decoration:underline;" data-action="voir-membres" data-uid="${c.uid}">${c.nom}</p>
+            <p class="entity-sub">${c.telephone} · ${nbClients} client(s)</p>
           </div>
-          <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
+          <span class="badge ${badgeClasse}">${c.statut}</span>
         </div>
         <div class="entity-actions">
-          <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">Traiter</button>
+          ${c.statut === "actif" ? `<button class="btn btn-ghost-sm" data-action="suspendre" data-uid="${c.uid}">Suspendre</button>` : ""}
+          ${c.statut === "suspendu" ? `<button class="btn btn-ghost-sm" data-action="reactiver" data-uid="${c.uid}">Réactiver</button>` : ""}
+          ${c.statut !== "licencie" ? `<button class="btn btn-danger btn-sm" data-action="licencier" data-uid="${c.uid}">Licencier</button>` : ""}
+          ${c.statut !== "actif" ? `<button class="btn btn-secondary btn-sm" data-action="substituer" data-uid="${c.uid}" data-nom="${c.nom}">Gérer ses clients</button>` : ""}
         </div>
       </div>
     `;
   }).join("");
 }
 
-document.getElementById("liste-retraits")?.addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-action='traiter-retrait']");
+document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
+  const nomCliquable = e.target.closest("[data-action='voir-membres']");
+    if (nomCliquable) {
+      state.collecteurSelectionne = nomCliquable.dataset.uid;
+      document.querySelector('.tab-btn[data-tab="membres"]').click();
+      renderMembres();
+      return;
+    }
+  const btn = e.target.closest("button[data-action]");
   if (!btn) return;
-  traiterRetrait(btn.dataset.id);
+  const { action, uid, nom } = btn.dataset;
+
+  if (action === "suspendre" || action === "reactiver") {
+    await updateDoc(doc(db, "users", uid), { statut: action === "suspendre" ? "suspendu" : "actif" });
+    notifier(action === "suspendre" ? "Collecteur suspendu." : "Collecteur réactivé.", "succes");
+  }
+  if (action === "licencier") {
+    ouvrirModalConfirmation(
+      "Licencier ce collecteur ?",
+      "Cette action est définitive. Le collecteur perdra l'accès à son compte. Vous pourrez continuer à gérer ses clients via le mode substitution.",
+      async () => {
+        await updateDoc(doc(db, "users", uid), { statut: "licencie" });
+        notifier("Collecteur licencié.", "succes");
+        fermerModal();
+      }
+    );
+  }
+  if (action === "substituer") {
+    state.substitutionId = uid;
+    document.getElementById("banner-substitution").classList.remove("hidden");
+    document.getElementById("banner-substitution-text").textContent = `Mode substitution actif — vous gérez les clients de ${nom}.`;
+    document.querySelector('.tab-btn[data-tab="membres"]').click();
+    renderMembres();
+  }
+  if (action === "supprimer-collecteur") {
+    ouvrirSuppressionCollecteur(uid, nom);
+  }
 });
 
-async function traiterRetrait(demandeId) {
-  const demande = state.retraits.find((r) => r.id === demandeId);
-  if (!demande) return;
+function ouvrirSuppressionCollecteur(collecteurId, nom) {
+  const autresCollecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime" && u.uid !== collecteurId);
+  const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === collecteurId).length;
 
-  const contrat = state.contracts.find((c) => c.membre_id === demande.memberId && c.statut === "actif");
-  if (!contrat) {
-    notifier("Aucun contrat actif trouvé pour ce membre.", "erreur");
-    return;
-  }
-
-  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
-  const totalVerseConfirme = versements
-    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
-    .reduce((s, p) => s + Number(p.montant || 0), 0);
-  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
-  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
-  const epargneNette = totalVerseConfirme - totalPretsEnCours;
-
-  if (demande.montant < epargneNette) {
+  ouvrirModal(`
+    <h2>Supprimer ${nom} ?</h2>
+    <p class="subtitle-sm">${nbClients} client(s) seront transférés. Le compte sera désactivé et le collecteur ne pourra plus se connecter.</p>
+    <div class="field-row">
+      <label>Transférer ses clients vers</label>
+      <select name="destination" id="select-destination-clients">
+        <option value="pdg">Moi-même (portefeuille PDG)</option>
+        ${autresCollecteurs.map((c) => `<option value="${c.uid}">${c.nom}</option>`).join("")}
+      </select>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+      <button type="button" class="btn btn-danger" id="modal-confirmer-suppression" style="flex:1;">Confirmer la suppression</button>
+    </div>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("modal-confirmer-suppression").addEventListener("click", async () => {
+    const destinationId = document.getElementById("select-destination-clients").value;
     try {
-      await addDoc(collection(db, "prets"), {
-        membre_id: demande.memberId,
-        contract_id: contrat.id,
-        collecteur_id: contrat.collecteur_id,
-        montant_initial: demande.montant,
-        date_debut: serverTimestamp(),
-        taux_hebdo: 0.02,
-        statut: "actif",
-      });
-      await updateDoc(doc(db, "withdrawalRequests", demande.id), {
-        statut: "confirme",
-        resultat: "pret",
-        epargne_nette_au_traitement: epargneNette,
-        date_confirmation: serverTimestamp(),
-      });
-      notifier(`Retrait de ${formatGNF(demande.montant)} confirmé — converti en prêt à 2%/semaine. Contrat maintenu.`, "succes");
+      await reassignerClientsCollecteur(collecteurId, destinationId);
+      await updateDoc(doc(db, "users", collecteurId), { statut: "supprime" });
+      notifier("Collecteur supprimé et clients transférés.", "succes");
+      fermerModal();
     } catch (err) {
       console.error(err);
       notifier("Erreur : " + err.message, "erreur");
     }
-    return;
-  }
-
-  if (demande.montant === epargneNette) {
-    try {
-      await updateDoc(doc(db, "contracts", contrat.id), { statut: "cloture" });
-      await addDoc(collection(db, "propositions_reconduction"), {
-        membre_id: demande.memberId,
-        ancien_contrat_id: contrat.id,
-        nouveau_montant_mise: null,
-        statut: "en_attente",
-        date_creation: serverTimestamp(),
-      });
-      await updateDoc(doc(db, "withdrawalRequests", demande.id), {
-        statut: "confirme",
-        resultat: "cloture_contrat",
-        epargne_nette_au_traitement: epargneNette,
-        date_confirmation: serverTimestamp(),
-      });
-      notifier("Retrait confirmé. Contrat clôturé — une proposition de reconduction a été envoyée au membre.", "succes");
-    } catch (err) {
-      console.error(err);
-      notifier("Erreur : " + err.message, "erreur");
-    }
-    return;
-  }
-
-  notifier("Montant supérieur à l'épargne nette actuelle — ce retrait ne devrait pas être possible.", "erreur");
+  });
 }
-demarrer();
+
+async function reassignerClientsCollecteur(ancienCollecteurId, nouveauCollecteurId) {
+  const nouvelUid = nouveauCollecteurId === "pdg" ? state.currentUser.uid : nouveauCollecteurId;
+
+  const membres = state.users.filter((u) => u.role === "membre" && u.parrain_id === ancienCollecteurId);
+  for (const membre of membres) {
+    await updateDoc(doc(db, "users", membre.uid), { parrain_id: nouvelUid });
+  }
+
+  const contrats = state.contracts.filter((c) => c.collecteur_id === ancienCollecteurId);
+  for (const contrat of contrats) {
+    await updateDoc(doc(db, "contracts", contrat.id), { collecteur_id: nouvelUid });
+  }
+
+  const paiements = state.payments.filter((p) => p.collecteur_id === ancienCollecteurId);
+  for (const paiement of paiements) {
+    await updateDoc(doc(db, "payments", paiement.id), { collecteur_id: nouvelUid });
+  }
+}
+    
+document.getElementById("btn-quitter-substitution").addEventListener("click", () => {
+  state.substitutionId = null;
+  document.getElementById("banner-substitution").classList.add("hidden");
+  renderMembres();
+});
+
+function calculerMontantDuPret(pret) {
+  const dateDebut = pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : new Date();
+  const nbSemaines = Math.floor((new Date() - dateDebut) / (1000 * 60 * 60 * 24 * 7));
+  const montantDuBrut = pret.montant_initial * (1 + pret.taux_hebdo * nbSemaines);
+  const dejaRembourse = (state.remboursements || [])
+    .filter((r) => r.pret_id === pret.id)
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  return Math.max(0, montantDuBrut - dejaRembourse);
+}
+function renderMembres() {
+  let membres = state.users.filter((u) => u.role === "membre");
+  if (state.substitutionId) {
+    membres = membres.filter((m) => m.parrain_id === state.substitutionId);
+  } else if (state.collecteurSelectionne) {
+    membres = membres.filter((m) => m.parrain_id === state.collecteurSelectionne);
+  }
+  const recherche = (document.getElementById("recherche-membres").value || "").toLowerCase();
+  if (recherche) {
+    membres = membres.filter((m) => m.nom.toLowerCase().includes(recherche) || (m.telephone || "").includes(recherche));
+  }
+
+  const enteteContainer = document.getElementById("entete-membres");
+  if (enteteContainer) {
+    if (state.collecteurSelectionne && !state.substitutionId) {
+      const collecteur = state.users.find((u) => u.uid === state.collecteurSelectionne);
+      enteteContainer.innerHTML = `
+        <button class="btn btn-ghost-sm" id="btn-retour-collecteurs" style="margin-bottom:10px;">← Retour aux collecteurs</button>
+        <p style="font-weight:bold; margin-bottom:8px;">Membres de ${collecteur ? collecteur.nom : ""}</p>
+      `;
+      document.getElementById("btn-retour-collecteurs").addEventListener("click", () => {
+        state.collecteurSelectionne = null;
+        renderMembres();
+      });
+    } else {
+      enteteContainer.innerHTML = "";
+    }
+  }
+  const container = document.getElementById("liste-membres");
+  if (membres.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun membre trouvé.
