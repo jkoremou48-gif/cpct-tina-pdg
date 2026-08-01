@@ -355,6 +355,28 @@ function calculerMontantDuPret(pret) {
     .reduce((s, r) => s + Number(r.montant || 0), 0);
   return Math.max(0, montantDuBrut - dejaRembourse);
 }
+
+// --- Épargne nette d'un contrat quelconque (actif ou clôturé) ---
+function calculerEpargneNetteContrat(contrat) {
+  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
+  const totalConfirme = versements
+    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
+    .reduce((s, p) => s + Number(p.montant || 0), 0);
+  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
+  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+  return totalConfirme - totalPretsEnCours;
+}
+
+// --- Anciens contrats clôturés non soldés d'un membre, en excluant un contrat donné ---
+function trouverContratsNonSoldes(membreId, contratExclureId) {
+  return state.contracts.filter((c) =>
+    c.membre_id === membreId &&
+    c.statut === "cloture" &&
+    c.id !== contratExclureId &&
+    !c.epargne_soldee
+  );
+}
+
 function renderMembres() {
   let membres = state.users.filter((u) => u.role === "membre");
   if (state.substitutionId) {
@@ -403,6 +425,10 @@ function renderMembres() {
       estInactif = true;
     }
     const pret = contrat ? (state.prets || []).find((p) => p.contract_id === contrat.id && p.statut === "actif") : null;
+
+    const contratsNonSoldes = trouverContratsNonSoldes(m.uid, contrat ? contrat.id : null);
+    const totalNonSolde = contratsNonSoldes.reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
+
     return `
       <div class="entity-card" data-uid="${m.uid}">
           <div class="entity-card-top">
@@ -410,6 +436,7 @@ function renderMembres() {
               <p class="entity-nom">${m.nom}</p>
               <p class="entity-sub" style="${estInactif ? "color:#c0392b; font-weight:bold;" : ""}">${m.telephone} · ${statutContrat}</p>
               ${pret ? `<p class="entity-sub" style="color:#c0392b;">Prêt en cours : ${formatGNF(calculerMontantDuPret(pret))}</p>` : ""}
+              ${totalNonSolde > 0 ? `<p class="entity-sub" style="color:#c0392b; font-weight:bold;">Contrat non soldé : ${formatGNF(totalNonSolde)}</p>` : ""}
             </div>
             <span class="badge badge-actif">${formatGNF(totalVerse)}</span>
           </div>
@@ -460,6 +487,9 @@ function afficherDetailMembre(uid) {
   const versements = contrat ? state.payments.filter((p) => p.contract_id === contrat.id).sort((a, b) => a.jour_numero - b.jour_numero) : [];
 const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
 
+  const contratsNonSoldes = trouverContratsNonSoldes(uid, contrat ? contrat.id : null);
+  const totalNonSolde = contratsNonSoldes.reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
+
   const html = `
     <h2>${membre.nom}</h2>
     <p class="subtitle-sm">${membre.telephone}</p>
@@ -467,6 +497,7 @@ const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_nu
     <div class="detail-line"><span>Début du contrat</span><span>${contrat ? formatDate(contrat.date_debut) : "—"}</span></div>
     <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
     <div class="detail-line"><span>Total épargné</span><span>${formatGNF(totalVerse)}</span></div>
+    ${totalNonSolde > 0 ? `<div class="detail-line"><span style="color:#c0392b;">Contrat(s) non soldé(s)</span><span style="color:#c0392b;">${formatGNF(totalNonSolde)}</span></div>` : ""}
     <h2 style="margin-top:18px; font-size:15px;">Historique des versements</h2>
     <div style="max-height:220px; overflow-y:auto; margin-top:8px;">
       ${versements.length === 0 ? '<p class="empty-state">Aucun versement enregistré.</p>' : versements.map((v) => `
@@ -755,6 +786,19 @@ document.getElementById("liste-retraits")?.addEventListener("click", (e) => {
   traiterRetrait(btn.dataset.id);
 });
 
+// --- Marque comme soldés tous les anciens contrats clôturés non soldés d'un membre ---
+// Appelé dès qu'une demande de retrait est confirmée, peu importe le montant.
+async function soldeAnciensContrats(membreId, contratExclureId) {
+  const anciens = trouverContratsNonSoldes(membreId, contratExclureId);
+  for (const c of anciens) {
+    try {
+      await updateDoc(doc(db, "contracts", c.id), { epargne_soldee: true });
+    } catch (err) {
+      console.error("Erreur solde ancien contrat :", err);
+    }
+  }
+}
+
 async function traiterRetrait(demandeId) {
   const demande = state.retraits.find((r) => r.id === demandeId);
   if (!demande) return;
@@ -790,6 +834,7 @@ async function traiterRetrait(demandeId) {
         epargne_nette_au_traitement: epargneNette,
         date_confirmation: serverTimestamp(),
       });
+      await soldeAnciensContrats(demande.memberId, contrat.id);
       notifier(`Retrait de ${formatGNF(demande.montant)} confirmé — converti en prêt à 2%/semaine. Contrat maintenu.`, "succes");
     } catch (err) {
       console.error(err);
@@ -814,6 +859,7 @@ async function traiterRetrait(demandeId) {
         epargne_nette_au_traitement: epargneNette,
         date_confirmation: serverTimestamp(),
       });
+      await soldeAnciensContrats(demande.memberId, contrat.id);
       notifier("Retrait confirmé. Contrat clôturé — une proposition de reconduction a été envoyée au membre.", "succes");
     } catch (err) {
       console.error(err);
