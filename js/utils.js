@@ -30,33 +30,32 @@ export function nomMois(cleMoisAnnee) {
   return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 }
 
+// --- Ne compte QUE les versements confirmés par le PDG ; commission = part PDG (70%) uniquement ---
+const PART_COMMISSION_PDG = 0.70;
+
 export function calculerSoldes(payments, contracts) {
-  let totalEpargnes = 0;
-  let totalCommissions = 0;
-  let totalMises = 0;
+  let totalEpargnesConfirmees = 0;
+  let totalCommissionsBrutesConfirmees = 0;
   const parMois = {};
-  const contractsById = Object.fromEntries(contracts.map((c) => [c.id, c]));
 
   for (const p of payments) {
+    if (p.statut !== "confirme") continue; // ignore tout ce qui n'est pas encore confirmé par le PDG
+
     const cle = moisDeDate(p.date);
     if (!parMois[cle]) parMois[cle] = { epargnes: 0, commissions: 0 };
+
     if (p.jour_numero === 1) {
-      totalCommissions += p.montant;
-      parMois[cle].commissions += p.montant;
+      totalCommissionsBrutesConfirmees += p.montant;
+      parMois[cle].commissions += p.montant * PART_COMMISSION_PDG;
     } else {
-      const contrat = contractsById[p.contract_id];
-      if (contrat && contrat.statut === "actif") {
-        totalEpargnes += p.montant;
-      }
+      totalEpargnesConfirmees += p.montant;
       parMois[cle].epargnes += p.montant;
     }
   }
-  for (const c of contracts) {
-    if (c.statut === "cloture" && c.montant_mise) {
-      totalMises += c.montant_mise;
-    }
-  }
-  return { totalEpargnes, totalCommissions, totalMises, parMois };
+
+  const totalCommissions = totalCommissionsBrutesConfirmees * PART_COMMISSION_PDG;
+
+  return { totalEpargnes: totalEpargnesConfirmees, totalCommissions, parMois };
 }
 
 export function calculerStatutContrat(contrat, versementsConfirmes) {
