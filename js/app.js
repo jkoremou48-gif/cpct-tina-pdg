@@ -20,6 +20,7 @@ const state = {
   substitutionId: null,
   prets: [],
   remboursements: [],
+  versementsCollecteur: [],
   collecteurSelectionne: null,
   unsubscribers: [],
 };
@@ -180,7 +181,11 @@ const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
     state.remboursements = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets);
+  const unsubVersementsCollecteur = onSnapshot(collection(db, "versements_collecteur"), (snap) => {
+    state.versementsCollecteur = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets, unsubVersementsCollecteur);
 }
 
 function render() {
@@ -218,6 +223,17 @@ function renderApercu() {
   }
 }
 
+// --- Épargne nette d'un contrat quelconque (actif ou clôturé) ---
+function calculerEpargneNetteContrat(contrat) {
+  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
+  const totalConfirme = versements
+    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
+    .reduce((s, p) => s + Number(p.montant || 0), 0);
+  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
+  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+  return totalConfirme - totalPretsEnCours;
+}
+
 function renderCollecteurs() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const container = document.getElementById("liste-collecteurs");
@@ -225,9 +241,36 @@ function renderCollecteurs() {
     container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré. Générez un code pour en inviter un.</p>`;
     return;
   }
+
+  const versementsConfirmesTous = state.payments.filter((p) => p.statut === "confirme");
+
   container.innerHTML = collecteurs.map((c) => {
     const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === c.uid).length;
     const badgeClasse = c.statut === "actif" ? "badge-actif" : c.statut === "suspendu" ? "badge-suspendu" : "badge-licencie";
+
+    const contratsCollecteur = state.contracts.filter((ct) => ct.collecteur_id === c.uid);
+    let nbActifs = 0;
+    let nbInactifs = 0;
+    let soldeEpargneTotal = 0;
+    contratsCollecteur.forEach((ct) => {
+      if (ct.statut === "actif") {
+        const statutCalc = calculerStatutContrat(ct, versementsConfirmesTous);
+        if (statutCalc === "inactif") {
+          nbInactifs++;
+        } else {
+          nbActifs++;
+        }
+        soldeEpargneTotal += Math.max(0, calculerEpargneNetteContrat(ct));
+      }
+    });
+
+    const TC = state.payments.filter((p) => p.collecteur_id === c.uid).reduce((s, p) => s + Number(p.montant || 0), 0);
+    const TV = state.versementsCollecteur.filter((v) => v.collecteur_id === c.uid).reduce((s, v) => s + Number(v.montant || 0), 0);
+    const resteAVerser = TC - TV;
+
+    const pretsCollecteur = state.prets.filter((p) => p.collecteur_id === c.uid && p.statut === "actif");
+    const totalPretsEnCours = pretsCollecteur.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+
     return `
       <div class="entity-card" data-uid="${c.uid}">
         <div class="entity-card-top">
@@ -237,7 +280,15 @@ function renderCollecteurs() {
           </div>
           <span class="badge ${badgeClasse}">${c.statut}</span>
         </div>
+        <div class="detail-line"><span>Contrats actifs</span><span>${nbActifs}</span></div>
+        <div class="detail-line"><span>Contrats inactifs</span><span style="${nbInactifs > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${nbInactifs}</span></div>
+        <div class="detail-line"><span>Solde global d'épargne</span><span>${formatGNF(soldeEpargneTotal)}</span></div>
+        <div class="detail-line"><span>Total collecté</span><span>${formatGNF(TC)}</span></div>
+        <div class="detail-line"><span>Versé au PDG</span><span>${formatGNF(TV)}</span></div>
+        <div class="detail-line"><span>Reste à verser</span><span style="${resteAVerser > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${formatGNF(resteAVerser)}</span></div>
+        <div class="detail-line"><span>Prêts en cours (ses membres)</span><span>${formatGNF(totalPretsEnCours)}</span></div>
         <div class="entity-actions">
+          <button class="btn btn-secondary btn-sm" data-action="enregistrer-versement" data-uid="${c.uid}" data-nom="${c.nom}">Enregistrer un versement</button>
           ${c.statut === "actif" ? `<button class="btn btn-ghost-sm" data-action="suspendre" data-uid="${c.uid}">Suspendre</button>` : ""}
           ${c.statut === "suspendu" ? `<button class="btn btn-ghost-sm" data-action="reactiver" data-uid="${c.uid}">Réactiver</button>` : ""}
           ${c.statut !== "licencie" ? `<button class="btn btn-danger btn-sm" data-action="licencier" data-uid="${c.uid}">Licencier</button>` : ""}
@@ -246,6 +297,45 @@ function renderCollecteurs() {
       </div>
     `;
   }).join("");
+}
+
+function ouvrirVersementCollecteur(collecteurId, nom) {
+  const TC = state.payments.filter((p) => p.collecteur_id === collecteurId).reduce((s, p) => s + Number(p.montant || 0), 0);
+  const TV = state.versementsCollecteur.filter((v) => v.collecteur_id === collecteurId).reduce((s, v) => s + Number(v.montant || 0), 0);
+  const resteAVerser = TC - TV;
+
+  ouvrirModal(`
+    <h2>Versement reçu — ${nom}</h2>
+    <p class="subtitle-sm">Reste à verser actuellement : <b>${formatGNF(resteAVerser)}</b></p>
+    <form id="form-versement-collecteur">
+      <div class="field-row">
+        <label>Montant physiquement reçu (GNF)</label>
+        <input type="number" name="montant" min="1" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Confirmer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-versement-collecteur").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const montant = Number(new FormData(e.target).get("montant"));
+    try {
+      await addDoc(collection(db, "versements_collecteur"), {
+        collecteur_id: collecteurId,
+        montant,
+        pdg_id: state.currentUser.uid,
+        date: serverTimestamp(),
+      });
+      notifier("Versement enregistré.", "succes");
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
 }
 
 document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
@@ -260,6 +350,10 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
   if (!btn) return;
   const { action, uid, nom } = btn.dataset;
 
+  if (action === "enregistrer-versement") {
+    ouvrirVersementCollecteur(uid, nom);
+    return;
+  }
   if (action === "suspendre" || action === "reactiver") {
     await updateDoc(doc(db, "users", uid), { statut: action === "suspendre" ? "suspendu" : "actif" });
     notifier(action === "suspendre" ? "Collecteur suspendu." : "Collecteur réactivé.", "succes");
@@ -354,17 +448,6 @@ function calculerMontantDuPret(pret) {
     .filter((r) => r.pret_id === pret.id)
     .reduce((s, r) => s + Number(r.montant || 0), 0);
   return Math.max(0, montantDuBrut - dejaRembourse);
-}
-
-// --- Épargne nette d'un contrat quelconque (actif ou clôturé) ---
-function calculerEpargneNetteContrat(contrat) {
-  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
-  const totalConfirme = versements
-    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
-    .reduce((s, p) => s + Number(p.montant || 0), 0);
-  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
-  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
-  return totalConfirme - totalPretsEnCours;
 }
 
 // --- Anciens contrats clôturés non soldés d'un membre, en excluant un contrat donné ---
@@ -775,99 +858,3 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
         <div class="entity-actions">
           <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">Traiter</button>
         </div>
-      </div>
-    `;
-  }).join("");
-}
-
-document.getElementById("liste-retraits")?.addEventListener("click", (e) => {
-  const btn = e.target.closest("button[data-action='traiter-retrait']");
-  if (!btn) return;
-  traiterRetrait(btn.dataset.id);
-});
-
-// --- Marque comme soldés tous les anciens contrats clôturés non soldés d'un membre ---
-// Appelé dès qu'une demande de retrait est confirmée, peu importe le montant.
-async function soldeAnciensContrats(membreId, contratExclureId) {
-  const anciens = trouverContratsNonSoldes(membreId, contratExclureId);
-  for (const c of anciens) {
-    try {
-      await updateDoc(doc(db, "contracts", c.id), { epargne_soldee: true });
-    } catch (err) {
-      console.error("Erreur solde ancien contrat :", err);
-    }
-  }
-}
-
-async function traiterRetrait(demandeId) {
-  const demande = state.retraits.find((r) => r.id === demandeId);
-  if (!demande) return;
-
-  const contrat = state.contracts.find((c) => c.membre_id === demande.memberId && c.statut === "actif");
-  if (!contrat) {
-    notifier("Aucun contrat actif trouvé pour ce membre.", "erreur");
-    return;
-  }
-
-  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
-  const totalVerseConfirme = versements
-    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
-    .reduce((s, p) => s + Number(p.montant || 0), 0);
-  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
-  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
-  const epargneNette = totalVerseConfirme - totalPretsEnCours;
-
-  if (demande.montant < epargneNette) {
-    try {
-      await addDoc(collection(db, "prets"), {
-        membre_id: demande.memberId,
-        contract_id: contrat.id,
-        collecteur_id: contrat.collecteur_id,
-        montant_initial: demande.montant,
-        date_debut: serverTimestamp(),
-        taux_hebdo: 0.02,
-        statut: "actif",
-      });
-      await updateDoc(doc(db, "withdrawalRequests", demande.id), {
-        statut: "confirme",
-        resultat: "pret",
-        epargne_nette_au_traitement: epargneNette,
-        date_confirmation: serverTimestamp(),
-      });
-      await soldeAnciensContrats(demande.memberId, contrat.id);
-      notifier(`Retrait de ${formatGNF(demande.montant)} confirmé — converti en prêt à 2%/semaine. Contrat maintenu.`, "succes");
-    } catch (err) {
-      console.error(err);
-      notifier("Erreur : " + err.message, "erreur");
-    }
-    return;
-  }
-
-  if (demande.montant === epargneNette) {
-    try {
-      await updateDoc(doc(db, "contracts", contrat.id), { statut: "cloture" });
-      await addDoc(collection(db, "propositions_reconduction"), {
-        membre_id: demande.memberId,
-        ancien_contrat_id: contrat.id,
-        nouveau_montant_mise: null,
-        statut: "en_attente",
-        date_creation: serverTimestamp(),
-      });
-      await updateDoc(doc(db, "withdrawalRequests", demande.id), {
-        statut: "confirme",
-        resultat: "cloture_contrat",
-        epargne_nette_au_traitement: epargneNette,
-        date_confirmation: serverTimestamp(),
-      });
-      await soldeAnciensContrats(demande.memberId, contrat.id);
-      notifier("Retrait confirmé. Contrat clôturé — une proposition de reconduction a été envoyée au membre.", "succes");
-    } catch (err) {
-      console.error(err);
-      notifier("Erreur : " + err.message, "erreur");
-    }
-    return;
-  }
-
-  notifier("Montant supérieur à l'épargne nette actuelle — ce retrait ne devrait pas être possible.", "erreur");
-}
-demarrer();
