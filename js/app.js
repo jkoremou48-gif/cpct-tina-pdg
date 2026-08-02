@@ -23,11 +23,11 @@ const state = {
   versementsCollecteur: [],
   collecteurSelectionne: null,
   retraits: [],
+  interetsPartages: [],
   unsubscribers: [],
 };
 let creationEnCours = false;
 
-// --- Convertit un numéro de téléphone en "email technique" pour Firebase Auth ---
 function telephoneVersEmailTechnique(telephone) {
   const chiffres = telephone.replace(/\D/g, "");
   return `${chiffres}@membre.cpct-tina.local`;
@@ -183,7 +183,11 @@ function lancerDashboard() {
     state.versementsCollecteur = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets, unsubRemboursements, unsubVersementsCollecteur);
+  const unsubInterets = onSnapshot(collection(db, "interets_prets_repartis"), (snap) => {
+    state.interetsPartages = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets);
 }
 
 function render() {
@@ -198,7 +202,8 @@ function render() {
 function renderApercu() {
   const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
-  const commissionsDisponibles = totalCommissions - totalDecaisse;
+  const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse;
 
   document.getElementById("stat-total-epargnes").textContent = formatGNF(totalEpargnes);
   document.getElementById("stat-total-commissions").textContent = formatGNF(commissionsDisponibles);
@@ -222,15 +227,20 @@ function renderApercu() {
   }
 }
 
-// --- Épargne nette d'un contrat quelconque (actif ou clôturé) ---
+// --- Épargne nette d'un contrat : le prêt NE la réduit PAS (règle validée le 2 août) ---
 function calculerEpargneNetteContrat(contrat) {
   const versements = state.payments.filter((p) => p.contract_id === contrat.id);
-  const totalConfirme = versements
+  return versements
     .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
     .reduce((s, p) => s + Number(p.montant || 0), 0);
-  const pretsActifs = state.prets.filter((p) => p.contract_id === contrat.id && p.statut === "actif");
-  const totalPretsEnCours = pretsActifs.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
-  return totalConfirme - totalPretsEnCours;
+}
+
+// --- Solde disponible = épargne nette - prêt actif non remboursé ---
+function calculerSoldeDisponible(contrat) {
+  const epargneNette = calculerEpargneNetteContrat(contrat);
+  const pret = (state.prets || []).find((p) => p.contract_id === contrat.id && p.statut === "actif");
+  const pretDu = pret ? calculerMontantDuPret(pret) : 0;
+  return Math.max(0, epargneNette - pretDu);
 }
 
 function renderCollecteurs() {
@@ -575,6 +585,7 @@ function afficherDetailMembre(uid) {
 
   const pret = contrat ? (state.prets || []).find((p) => p.contract_id === contrat.id && p.statut === "actif") : null;
   const datePret = pret && pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : null;
+  const soldeDisponible = contrat ? calculerSoldeDisponible(contrat) : 0;
 
   const html = `
     <h2>${membre.nom}</h2>
@@ -582,7 +593,8 @@ function afficherDetailMembre(uid) {
     <div class="detail-line"><span>Statut du contrat</span><span>${contrat ? contrat.statut : "—"}</span></div>
     <div class="detail-line"><span>Début du contrat</span><span>${contrat ? formatDate(contrat.date_debut) : "—"}</span></div>
     <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
-    <div class="detail-line"><span>Total épargné</span><span>${formatGNF(totalVerse)}</span></div>
+    <div class="detail-line"><span>Total épargné (épargne nette)</span><span>${formatGNF(totalVerse)}</span></div>
+    ${pret ? `<div class="detail-line"><span style="color:#c0392b;">Solde disponible (après prêt)</span><span style="color:#c0392b;"><b>${formatGNF(soldeDisponible)}</b></span></div>` : ""}
     ${totalNonSolde > 0 ? `<div class="detail-line"><span style="color:#c0392b;">Contrat(s) non soldé(s)</span><span style="color:#c0392b;">${formatGNF(totalNonSolde)}</span></div>` : ""}
     ${pret ? `
       <h2 style="margin-top:18px; font-size:15px; color:#c0392b;">Prêt en cours</h2>
@@ -740,7 +752,8 @@ function ouvrirModalConfirmation(titre, texte, onConfirm) {
 document.getElementById("btn-decaisser").addEventListener("click", () => {
   const { totalCommissions } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
-  const disponible = totalCommissions - totalDecaisse;
+  const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const disponible = totalCommissions + totalInteretsPdg - totalDecaisse;
   ouvrirModal(`
     <h2>Décaisser des commissions</h2>
     <p class="subtitle-sm">Montant disponible : <b>${formatGNF(disponible)}</b></p>
@@ -846,7 +859,6 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
   }
 });
 
-// --- Libellé et badge lisibles du type de demande de retrait ---
 function infoTypeRetrait(type) {
   const infos = {
     'pret': { libelle: 'Prêt (2%/semaine)', classe: 'badge-suspendu', actionLabel: 'Valider comme prêt' },
@@ -899,7 +911,6 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
     async () => {
       try {
         if (retrait.type === "pret") {
-          // Le retrait devient un prêt à 2%/semaine, 1er intérêt facturé dès la validation
           const contrat = state.contracts.find((c) => c.id === retrait.contractId);
           const collecteurId = contrat ? contrat.collecteur_id : (state.users.find((u) => u.uid === retrait.memberId)?.parrain_id || null);
 
@@ -910,6 +921,7 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
             montant_initial: retrait.montant,
             taux_hebdo: 0.02,
             statut: "actif",
+            interet_deja_reconnu: 0,
             date_debut: serverTimestamp(),
             pdg_id: state.currentUser.uid,
           });
@@ -921,7 +933,6 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
 
           notifier("Prêt validé et enregistré.", "succes");
         } else if (retrait.type === "retrait_final") {
-          // Clôture automatique du contrat + proposition de reconduction au membre
           await updateDoc(doc(db, "withdrawalRequests", id), {
             statut: "confirme",
             date_confirmation: serverTimestamp(),
@@ -943,7 +954,6 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
 
           notifier("Retrait confirmé, contrat clôturé. Le membre peut choisir de reconduire.", "succes");
         } else {
-          // solde_contrat_termine ou type absent (retrait d'épargne classique)
           await updateDoc(doc(db, "withdrawalRequests", id), {
             statut: "confirme",
             date_confirmation: serverTimestamp(),
