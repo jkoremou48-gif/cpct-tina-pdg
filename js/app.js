@@ -564,23 +564,33 @@ document.getElementById("liste-membres").addEventListener("click", (e) => {
 });
 
 function afficherDetailMembre(uid) {
+function afficherDetailMembre(uid) {
   const membre = state.users.find((u) => u.uid === uid);
   const contrats = state.contracts.filter((c) => c.membre_id === uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""));
   const contrat = contrats[0];
   const versements = contrat ? state.payments.filter((p) => p.contract_id === contrat.id).sort((a, b) => a.jour_numero - b.jour_numero) : [];
-const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+  const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
 
   const contratsNonSoldes = trouverContratsNonSoldes(uid, contrat ? contrat.id : null);
   const totalNonSolde = contratsNonSoldes.reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
 
+  const pret = contrat ? (state.prets || []).find((p) => p.contract_id === contrat.id && p.statut === "actif") : null;
+  const datePret = pret && pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : null;
+
   const html = `
     <h2>${membre.nom}</h2>
-    <p class="subtitle-sm">${membre.telephone}</p>
+    <p class="subtitle-sm">Identifiant de connexion (téléphone) : <b>${membre.telephone}</b></p>
     <div class="detail-line"><span>Statut du contrat</span><span>${contrat ? contrat.statut : "—"}</span></div>
     <div class="detail-line"><span>Début du contrat</span><span>${contrat ? formatDate(contrat.date_debut) : "—"}</span></div>
     <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
     <div class="detail-line"><span>Total épargné</span><span>${formatGNF(totalVerse)}</span></div>
     ${totalNonSolde > 0 ? `<div class="detail-line"><span style="color:#c0392b;">Contrat(s) non soldé(s)</span><span style="color:#c0392b;">${formatGNF(totalNonSolde)}</span></div>` : ""}
+    ${pret ? `
+      <h2 style="margin-top:18px; font-size:15px; color:#c0392b;">Prêt en cours</h2>
+      <div class="detail-line"><span>Capital emprunté</span><span>${formatGNF(pret.montant_initial)}</span></div>
+      <div class="detail-line"><span>Montant dû actuellement</span><span><b>${formatGNF(calculerMontantDuPret(pret))}</b></span></div>
+      <div class="detail-line"><span>Date du prêt</span><span>${datePret ? formatDate(datePret) : "—"}</span></div>
+    ` : ""}
     <h2 style="margin-top:18px; font-size:15px;">Historique des versements</h2>
     <div style="max-height:220px; overflow-y:auto; margin-top:8px;">
       ${versements.length === 0 ? '<p class="empty-state">Aucun versement enregistré.</p>' : versements.map((v) => `
