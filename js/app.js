@@ -22,14 +22,12 @@ const state = {
   remboursements: [],
   versementsCollecteur: [],
   collecteurSelectionne: null,
+  retraits: [],
   unsubscribers: [],
 };
 let creationEnCours = false;
 
 // --- Convertit un numéro de téléphone en "email technique" pour Firebase Auth ---
-// Le membre se connecte avec son numéro de téléphone, pas un email. On construit
-// en interne un email fictif à partir des chiffres du téléphone (jamais montré
-// au membre) pour satisfaire l'API Firebase Auth email/password.
 function telephoneVersEmailTechnique(telephone) {
   const chiffres = telephone.replace(/\D/g, "");
   return `${chiffres}@membre.cpct-tina.local`;
@@ -166,14 +164,14 @@ function lancerDashboard() {
       .filter((m) => m.statut === "en_attente_validation");
     render();
   });
- const unsubRetraits = onSnapshot(
+  const unsubRetraits = onSnapshot(
     query(collection(db, "withdrawalRequests"), where("statut", "==", "en_attente")),
     (snap) => {
       state.retraits = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
       render();
     }
   );
-const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
+  const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
     state.prets = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
@@ -185,7 +183,7 @@ const unsubPrets = onSnapshot(collection(db, "prets"), (snap) => {
     state.versementsCollecteur = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets, unsubVersementsCollecteur);
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubPrets, unsubRemboursements, unsubVersementsCollecteur);
 }
 
 function render() {
@@ -196,6 +194,7 @@ function render() {
   renderMembresEnAttente();
   renderRetraits();
 }
+
 function renderApercu() {
   const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
@@ -293,6 +292,7 @@ function renderCollecteurs() {
           ${c.statut === "suspendu" ? `<button class="btn btn-ghost-sm" data-action="reactiver" data-uid="${c.uid}">Réactiver</button>` : ""}
           ${c.statut !== "licencie" ? `<button class="btn btn-danger btn-sm" data-action="licencier" data-uid="${c.uid}">Licencier</button>` : ""}
           ${c.statut !== "actif" ? `<button class="btn btn-secondary btn-sm" data-action="substituer" data-uid="${c.uid}" data-nom="${c.nom}">Gérer ses clients</button>` : ""}
+          <button class="btn btn-danger btn-sm" data-action="supprimer-collecteur" data-uid="${c.uid}" data-nom="${c.nom}">Supprimer</button>
         </div>
       </div>
     `;
@@ -340,12 +340,12 @@ function ouvrirVersementCollecteur(collecteurId, nom) {
 
 document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
   const nomCliquable = e.target.closest("[data-action='voir-membres']");
-    if (nomCliquable) {
-      state.collecteurSelectionne = nomCliquable.dataset.uid;
-      document.querySelector('.tab-btn[data-tab="membres"]').click();
-      renderMembres();
-      return;
-    }
+  if (nomCliquable) {
+    state.collecteurSelectionne = nomCliquable.dataset.uid;
+    document.querySelector('.tab-btn[data-tab="membres"]').click();
+    renderMembres();
+    return;
+  }
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
   const { action, uid, nom } = btn.dataset;
@@ -433,7 +433,7 @@ async function reassignerClientsCollecteur(ancienCollecteurId, nouveauCollecteur
     await updateDoc(doc(db, "payments", paiement.id), { collecteur_id: nouvelUid });
   }
 }
-    
+
 document.getElementById("btn-quitter-substitution").addEventListener("click", () => {
   state.substitutionId = null;
   document.getElementById("banner-substitution").classList.add("hidden");
@@ -564,7 +564,6 @@ document.getElementById("liste-membres").addEventListener("click", (e) => {
 });
 
 function afficherDetailMembre(uid) {
-function afficherDetailMembre(uid) {
   const membre = state.users.find((u) => u.uid === uid);
   const contrats = state.contracts.filter((c) => c.membre_id === uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""));
   const contrat = contrats[0];
@@ -682,7 +681,6 @@ async function validerMembre(membreEnAttente, password) {
       date_creation: serverTimestamp(),
     });
 
-    // Relier les contrats créés par le collecteur (encore sans membre_id) à ce nouveau compte
     const contratsLies = state.contracts.filter((c) => c.membre_en_attente_id === membreEnAttente.id);
     for (const contrat of contratsLies) {
       await updateDoc(doc(db, "contracts", contrat.id), { membre_id: uid });
@@ -800,6 +798,7 @@ async function genererEtAfficherCode(type) {
   `);
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
 }
+
 function renderConfirmations() {
   const container = document.getElementById("liste-confirmations");
   if (!container) return;
@@ -845,7 +844,9 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
     console.error(err);
     notifier("Erreur : " + err.message, "erreur");
   }
-});function renderRetraits() {
+});
+
+function renderRetraits() {
   const container = document.getElementById("liste-retraits");
   if (!container) return;
 
@@ -868,3 +869,41 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
         <div class="entity-actions">
           <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">Traiter</button>
         </div>
+      </div>
+    `;
+  }).join("");
+}
+
+document.getElementById("liste-retraits")?.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button[data-action='traiter-retrait']");
+  if (!btn) return;
+  const id = btn.dataset.id;
+  const retrait = state.retraits.find((r) => r.id === id);
+  if (!retrait) return;
+
+  ouvrirModalConfirmation(
+    "Confirmer ce retrait ?",
+    `Le retrait de ${formatGNF(retrait.montant)} sera marqué comme traité. Tout ancien contrat non soldé de ce membre sera automatiquement soldé.`,
+    async () => {
+      try {
+        await updateDoc(doc(db, "withdrawalRequests", id), {
+          statut: "confirme",
+          date_confirmation: serverTimestamp(),
+        });
+
+        const contratsNonSoldes = trouverContratsNonSoldes(retrait.memberId, null);
+        for (const contrat of contratsNonSoldes) {
+          await updateDoc(doc(db, "contracts", contrat.id), { epargne_soldee: true });
+        }
+
+        notifier("Retrait traité.", "succes");
+        fermerModal();
+      } catch (err) {
+        console.error(err);
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    }
+  );
+});
+
+demarrer();
