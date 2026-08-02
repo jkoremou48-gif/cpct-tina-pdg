@@ -442,7 +442,7 @@ document.getElementById("btn-quitter-substitution").addEventListener("click", ()
 
 function calculerMontantDuPret(pret) {
   const dateDebut = pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : new Date();
-  const nbSemaines = Math.floor((new Date() - dateDebut) / (1000 * 60 * 60 * 24 * 7));
+  const nbSemaines = Math.floor((new Date() - dateDebut) / (1000 * 60 * 60 * 24 * 7)) + 1;
   const montantDuBrut = pret.montant_initial * (1 + pret.taux_hebdo * nbSemaines);
   const dejaRembourse = (state.remboursements || [])
     .filter((r) => r.pret_id === pret.id)
@@ -846,6 +846,16 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
   }
 });
 
+// --- Libellé et badge lisibles du type de demande de retrait ---
+function infoTypeRetrait(type) {
+  const infos = {
+    'pret': { libelle: 'Prêt (2%/semaine)', classe: 'badge-suspendu', actionLabel: 'Valider comme prêt' },
+    'solde_contrat_termine': { libelle: 'Solde de contrat terminé', classe: 'badge-actif', actionLabel: 'Confirmer' },
+    'retrait_final': { libelle: 'Retrait final (clôture)', classe: 'badge-licencie', actionLabel: 'Confirmer' },
+  };
+  return infos[type] || { libelle: 'Retrait d\'épargne', classe: 'badge-actif', actionLabel: 'Confirmer' };
+}
+
 function renderRetraits() {
   const container = document.getElementById("liste-retraits");
   if (!container) return;
@@ -857,17 +867,18 @@ function renderRetraits() {
 
   container.innerHTML = state.retraits.map((r) => {
     const membre = state.users.find((u) => u.uid === r.memberId);
+    const info = infoTypeRetrait(r.type);
     return `
       <div class="entity-card" data-id="${r.id}">
         <div class="entity-card-top">
           <div>
             <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
-            <p class="entity-sub">Demande de retrait</p>
+            <p class="entity-sub">${info.libelle}</p>
           </div>
-          <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
+          <span class="badge ${info.classe}">${formatGNF(r.montant)}</span>
         </div>
         <div class="entity-actions">
-          <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">Traiter</button>
+          <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">${info.actionLabel}</button>
         </div>
       </div>
     `;
@@ -880,23 +891,71 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
   const id = btn.dataset.id;
   const retrait = state.retraits.find((r) => r.id === id);
   if (!retrait) return;
+  const info = infoTypeRetrait(retrait.type);
 
   ouvrirModalConfirmation(
-    "Confirmer ce retrait ?",
-    `Le retrait de ${formatGNF(retrait.montant)} sera marqué comme traité. Tout ancien contrat non soldé de ce membre sera automatiquement soldé.`,
+    `${info.actionLabel} ce retrait ?`,
+    `Montant : ${formatGNF(retrait.montant)} · Type : ${info.libelle}`,
     async () => {
       try {
-        await updateDoc(doc(db, "withdrawalRequests", id), {
-          statut: "confirme",
-          date_confirmation: serverTimestamp(),
-        });
+        if (retrait.type === "pret") {
+          // Le retrait devient un prêt à 2%/semaine, 1er intérêt facturé dès la validation
+          const contrat = state.contracts.find((c) => c.id === retrait.contractId);
+          const collecteurId = contrat ? contrat.collecteur_id : (state.users.find((u) => u.uid === retrait.memberId)?.parrain_id || null);
 
-        const contratsNonSoldes = trouverContratsNonSoldes(retrait.memberId, null);
-        for (const contrat of contratsNonSoldes) {
-          await updateDoc(doc(db, "contracts", contrat.id), { epargne_soldee: true });
+          await addDoc(collection(db, "prets"), {
+            membre_id: retrait.memberId,
+            collecteur_id: collecteurId,
+            contract_id: retrait.contractId || null,
+            montant_initial: retrait.montant,
+            taux_hebdo: 0.02,
+            statut: "actif",
+            date_debut: serverTimestamp(),
+            pdg_id: state.currentUser.uid,
+          });
+
+          await updateDoc(doc(db, "withdrawalRequests", id), {
+            statut: "confirme",
+            date_confirmation: serverTimestamp(),
+          });
+
+          notifier("Prêt validé et enregistré.", "succes");
+        } else if (retrait.type === "retrait_final") {
+          // Clôture automatique du contrat + proposition de reconduction au membre
+          await updateDoc(doc(db, "withdrawalRequests", id), {
+            statut: "confirme",
+            date_confirmation: serverTimestamp(),
+          });
+
+          if (retrait.contractId) {
+            await updateDoc(doc(db, "contracts", retrait.contractId), {
+              statut: "cloture",
+              epargne_soldee: true,
+            });
+          }
+
+          await addDoc(collection(db, "propositions_reconduction"), {
+            membre_id: retrait.memberId,
+            contrat_precedent_id: retrait.contractId || null,
+            statut: "en_attente",
+            date_creation: serverTimestamp(),
+          });
+
+          notifier("Retrait confirmé, contrat clôturé. Le membre peut choisir de reconduire.", "succes");
+        } else {
+          // solde_contrat_termine ou type absent (retrait d'épargne classique)
+          await updateDoc(doc(db, "withdrawalRequests", id), {
+            statut: "confirme",
+            date_confirmation: serverTimestamp(),
+          });
+
+          const contratsNonSoldes = trouverContratsNonSoldes(retrait.memberId, null);
+          for (const contrat of contratsNonSoldes) {
+            await updateDoc(doc(db, "contracts", contrat.id), { epargne_soldee: true });
+          }
+
+          notifier("Retrait traité.", "succes");
         }
-
-        notifier("Retrait traité.", "succes");
         fermerModal();
       } catch (err) {
         console.error(err);
