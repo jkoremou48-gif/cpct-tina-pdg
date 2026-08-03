@@ -2,12 +2,14 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, signOut, doc, getDoc, setDoc, updateDoc,
   addDoc, collection, query, where, onSnapshot, serverTimestamp,
-  creerCompteSecondaire,
+  creerCompteSecondaire, uploaderPhotoProfil,
 } from "./firebase-config.js";
 
 import {
   genererCodeParrain, formatGNF, formatDate, nomMois, calculerSoldes, notifier, calculerStatutContrat,
 } from "./utils.js";
+
+const AVATAR_DEFAUT = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23ddd'/></svg>";
 
 const state = {
   entreprise: null,
@@ -93,6 +95,7 @@ document.getElementById("form-pdg").addEventListener("submit", async (e) => {
   const password = fd.get("password");
   const nom = fd.get("nom").trim();
   const telephone = fd.get("telephone").trim();
+  const residence = fd.get("residence").trim();
 
   creationEnCours = true;
   try {
@@ -100,7 +103,7 @@ document.getElementById("form-pdg").addEventListener("submit", async (e) => {
     const codeParrain = genererCodeParrain("PDG");
     const userData = {
       role: "pdg",
-      nom, telephone, email,
+      nom, telephone, email, residence,
       code_parrain: codeParrain,
       parrain_id: null,
       statut: "actif",
@@ -138,10 +141,27 @@ document.getElementById("btn-logout").addEventListener("click", async () => {
   showScreen("screen-login");
 });
 
+// --- Photo de profil du PDG ---
+document.getElementById("pdg-avatar-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file || !state.currentUser) return;
+  try {
+    const url = await uploaderPhotoProfil(state.currentUser.uid, file);
+    await updateDoc(doc(db, "users", state.currentUser.uid), { photoURL: url });
+    state.currentUser.photoURL = url;
+    document.getElementById("pdg-avatar").src = url;
+    notifier("Photo de profil mise à jour.", "succes");
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur lors de l'envoi de la photo : " + err.message, "erreur");
+  }
+});
+
 function lancerDashboard() {
   showScreen("screen-dashboard");
   document.getElementById("db-entreprise-nom").textContent = state.entreprise?.nom || "CPCT-TINA";
   document.getElementById("db-pdg-nom").textContent = state.currentUser.nom;
+  document.getElementById("pdg-avatar").src = state.currentUser.photoURL || AVATAR_DEFAUT;
 
   const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
     state.users = snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
@@ -213,7 +233,6 @@ function renderApercu() {
   const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
   const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse;
 
-  // Solde global des épargnes = versements confirmés − retraits confirmés − prêts actifs en cours + remboursements reçus
   const totalRetraitsConfirmes = (state.retraitsConfirmes || []).reduce((s, r) => s + Number(r.montant || 0), 0);
   const totalPretsEnCours = state.prets.filter((p) => p.statut === "actif").reduce((s, p) => s + Number(p.montant_initial || 0), 0);
   const totalRemboursements = (state.remboursements || []).reduce((s, r) => s + Number(r.montant || 0), 0);
@@ -241,6 +260,13 @@ function renderApercu() {
   }
 }
 
+document.getElementById("titre-historique-mensuel").addEventListener("click", () => {
+  const titre = document.getElementById("titre-historique-mensuel");
+  const zone = document.getElementById("monthly-breakdown");
+  zone.classList.toggle("hidden");
+  titre.classList.toggle("ouvert");
+});
+
 // --- Épargne nette d'un contrat : le prêt NE la réduit PAS (règle validée le 2 août) ---
 function calculerEpargneNetteContrat(contrat) {
   const versements = state.payments.filter((p) => p.contract_id === contrat.id);
@@ -249,12 +275,16 @@ function calculerEpargneNetteContrat(contrat) {
     .reduce((s, p) => s + Number(p.montant || 0), 0);
 }
 
-// --- Solde disponible = épargne nette - prêt actif non remboursé ---
 function calculerSoldeDisponible(contrat) {
   const epargneNette = calculerEpargneNetteContrat(contrat);
   const pret = (state.prets || []).find((p) => p.contract_id === contrat.id && p.statut === "actif");
   const pretDu = pret ? calculerMontantDuPret(pret) : 0;
   return Math.max(0, epargneNette - pretDu);
+}
+
+function avatarImg(u, taille) {
+  const classe = taille === "mini" ? "avatar-mini" : "avatar-pdg";
+  return `<img class="${classe}" src="${u && u.photoURL ? u.photoURL : AVATAR_DEFAUT}" alt="${u ? u.nom : ''}" />`;
 }
 
 function renderCollecteurs() {
@@ -297,9 +327,12 @@ function renderCollecteurs() {
     return `
       <div class="entity-card" data-uid="${c.uid}">
         <div class="entity-card-top">
-          <div>
-            <p class="entity-nom" style="cursor:pointer; text-decoration:underline;" data-action="voir-membres" data-uid="${c.uid}">${c.nom}</p>
-            <p class="entity-sub">${c.telephone} · ${nbClients} client(s)</p>
+          <div style="display:flex; align-items:center;">
+            ${avatarImg(c, "mini")}
+            <div>
+              <p class="entity-nom" style="cursor:pointer; text-decoration:underline;" data-action="voir-membres" data-uid="${c.uid}">${c.nom}</p>
+              <p class="entity-sub">${c.telephone} · ${nbClients} client(s)</p>
+            </div>
           </div>
           <span class="badge ${badgeClasse}">${c.statut}</span>
         </div>
@@ -474,7 +507,6 @@ function calculerMontantDuPret(pret) {
   return Math.max(0, montantDuBrut - dejaRembourse);
 }
 
-// --- Anciens contrats clôturés non soldés d'un membre, en excluant un contrat donné ---
 function trouverContratsNonSoldes(membreId, contratExclureId) {
   return state.contracts.filter((c) =>
     c.membre_id === membreId &&
@@ -539,11 +571,14 @@ function renderMembres() {
     return `
       <div class="entity-card" data-uid="${m.uid}">
           <div class="entity-card-top">
-            <div>
-              <p class="entity-nom">${m.nom}</p>
-              <p class="entity-sub" style="${estInactif ? "color:#c0392b; font-weight:bold;" : ""}">${m.telephone} · ${statutContrat}</p>
-              ${pret ? `<p class="entity-sub" style="color:#c0392b;">Prêt en cours : ${formatGNF(calculerMontantDuPret(pret))}</p>` : ""}
-              ${totalNonSolde > 0 ? `<p class="entity-sub" style="color:#c0392b; font-weight:bold;">Contrat non soldé : ${formatGNF(totalNonSolde)}</p>` : ""}
+            <div style="display:flex; align-items:center;">
+              ${avatarImg(m, "mini")}
+              <div>
+                <p class="entity-nom">${m.nom}</p>
+                <p class="entity-sub" style="${estInactif ? "color:#c0392b; font-weight:bold;" : ""}">${m.telephone} · ${statutContrat}</p>
+                ${pret ? `<p class="entity-sub" style="color:#c0392b;">Prêt en cours : ${formatGNF(calculerMontantDuPret(pret))}</p>` : ""}
+                ${totalNonSolde > 0 ? `<p class="entity-sub" style="color:#c0392b; font-weight:bold;">Contrat non soldé : ${formatGNF(totalNonSolde)}</p>` : ""}
+              </div>
             </div>
             <span class="badge badge-actif">${formatGNF(totalVerse)}</span>
           </div>
@@ -557,6 +592,96 @@ function renderMembres() {
 }
 
 document.getElementById("recherche-membres").addEventListener("input", renderMembres);
+
+// --- PDG crée directement un membre (choisit son collecteur) ---
+document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () => {
+  const collecteursActifs = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif");
+  if (collecteursActifs.length === 0) {
+    notifier("Créez d'abord un collecteur actif avant d'ajouter un membre.", "erreur");
+    return;
+  }
+  ouvrirModal(`
+    <h2>Nouveau membre</h2>
+    <p class="subtitle-sm">Ce membre sera rattaché au collecteur choisi. Un mot de passe est généré automatiquement.</p>
+    <form id="form-nouveau-membre-pdg">
+      <div class="field-row">
+        <label>Collecteur responsable</label>
+        <select name="collecteur_id" required>
+          ${collecteursActifs.map((c) => `<option value="${c.uid}">${c.nom}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field-row"><label>Nom complet</label><input type="text" name="nom" required /></div>
+      <div class="field-row"><label>Téléphone (identifiant de connexion)</label><input type="tel" name="telephone" required /></div>
+      <div class="field-row"><label>E-mail</label><input type="email" name="email" required /></div>
+      <div class="field-row"><label>Résidence</label><input type="text" name="residence" required /></div>
+      <div class="field-row"><label>Montant du versement quotidien (GNF)</label><input type="number" name="montantJour" min="1" required /></div>
+      <div class="field-row"><label>Commission encaissée aujourd'hui (jour 1, GNF)</label><input type="number" name="commission" min="1" required /></div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Créer le compte</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-nouveau-membre-pdg").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const collecteurId = fd.get("collecteur_id");
+    const nom = fd.get("nom").trim();
+    const telephone = fd.get("telephone").trim();
+    const email = fd.get("email").trim();
+    const residence = fd.get("residence").trim();
+    const montantJour = Number(fd.get("montantJour"));
+    const commission = Number(fd.get("commission"));
+    const password = telephone.replace(/\D/g, "").slice(-6);
+
+    try {
+      const emailTechnique = telephoneVersEmailTechnique(telephone);
+      const uid = await creerCompteSecondaire(emailTechnique, password);
+
+      await setDoc(doc(db, "users", uid), {
+        role: "membre",
+        nom, telephone, email, residence,
+        parrain_id: collecteurId,
+        statut: "actif",
+        date_creation: serverTimestamp(),
+      });
+
+      const contratRef = await addDoc(collection(db, "contracts"), {
+        membre_id: uid,
+        membre_nom: nom,
+        collecteur_id: collecteurId,
+        statut: "actif",
+        commission,
+        montant_mise: montantJour,
+        date_debut: new Date().toISOString(),
+      });
+
+      await addDoc(collection(db, "payments"), {
+        contract_id: contratRef.id,
+        collecteur_id: collecteurId,
+        membre_id: uid,
+        montant: commission,
+        jour_numero: 1,
+        statut: "collecte",
+        date: serverTimestamp(),
+      });
+
+      fermerModal();
+      ouvrirModal(`
+        <h2>Identifiants du membre</h2>
+        <p class="subtitle-sm">À transmettre oralement à ${nom}</p>
+        <div class="detail-line"><span>Téléphone</span><span><b>${telephone}</b></span></div>
+        <div class="detail-line"><span>Mot de passe</span><span><b>${password}</b></span></div>
+        <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-id" style="flex:1;">J'ai transmis les identifiants</button></div>
+      `);
+      document.getElementById("modal-fermer-id").addEventListener("click", fermerModal);
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+});
 
 document.getElementById("liste-membres").addEventListener("click", (e) => {
   const btnSupprimer = e.target.closest("button[data-action='supprimer-membre']");
@@ -602,8 +727,9 @@ function afficherDetailMembre(uid) {
   const soldeDisponible = contrat ? calculerSoldeDisponible(contrat) : 0;
 
   const html = `
-    <h2>${membre.nom}</h2>
+    <h2 style="display:flex; align-items:center; gap:10px;">${avatarImg(membre, "mini")}${membre.nom}</h2>
     <p class="subtitle-sm">Identifiant de connexion (téléphone) : <b>${membre.telephone}</b></p>
+    ${membre.residence ? `<p class="subtitle-sm">Résidence : ${membre.residence}</p>` : ""}
     <div class="detail-line"><span>Statut du contrat</span><span>${contrat ? contrat.statut : "—"}</span></div>
     <div class="detail-line"><span>Début du contrat</span><span>${contrat ? formatDate(contrat.date_debut) : "—"}</span></div>
     <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
@@ -628,7 +754,6 @@ function afficherDetailMembre(uid) {
   document.getElementById("btn-fermer-modal-membre").addEventListener("click", fermerModal);
 }
 
-// --- Membres en attente de validation ---
 function renderMembresEnAttente() {
   const container = document.getElementById("liste-attente");
   if (!container) return;
