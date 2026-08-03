@@ -1157,24 +1157,26 @@ document.getElementById("btn-reinitialiser-tout")?.addEventListener("click", () 
   ouvrirModal(`
     <h2 style="color:#c0392b;">⚠️ Réinitialiser complètement l'application ?</h2>
     <p class="subtitle-sm">Cette action supprimera <b>définitivement</b> toutes les données : entreprise, PDG, collecteurs, membres, contrats, versements, prêts, retraits. L'application redémarrera comme à l'installation. Cette action est <b>irréversible</b>.</p>
-    <div class="field-row">
-      <label>Tapez REINITIALISER pour confirmer</label>
-      <input type="text" id="confirmation-reset" placeholder="REINITIALISER" />
-    </div>
     <div class="modal-actions">
       <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
-      <button type="button" class="btn btn-danger" id="modal-confirmer-reset" style="flex:1;">Tout supprimer</button>
+      <button type="button" class="btn btn-danger" id="modal-confirmer-reset-1" style="flex:1;">Continuer</button>
     </div>
   `);
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
-  document.getElementById("modal-confirmer-reset").addEventListener("click", async () => {
-    const valeur = (document.getElementById("confirmation-reset").value || "").trim().toUpperCase();
-    if (valeur !== "REINITIALISER") {
-      notifier("Veuillez taper exactement REINITIALISER pour confirmer.", "erreur");
-      return;
-    }
-    fermerModal();
-    await reinitialiserTout();
+  document.getElementById("modal-confirmer-reset-1").addEventListener("click", () => {
+    ouvrirModal(`
+      <h2 style="color:#c0392b;">⚠️ Dernière confirmation</h2>
+      <p class="subtitle-sm">Toutes les données seront supprimées et l'application redémarrera comme neuve. Confirmez-vous ?</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler-2" style="flex:1;">Annuler</button>
+        <button type="button" class="btn btn-danger" id="modal-confirmer-reset-2" style="flex:1;">Oui, tout supprimer</button>
+      </div>
+    `);
+    document.getElementById("modal-annuler-2").addEventListener("click", fermerModal);
+    document.getElementById("modal-confirmer-reset-2").addEventListener("click", async () => {
+      fermerModal();
+      await reinitialiserTout();
+    });
   });
 });
 
