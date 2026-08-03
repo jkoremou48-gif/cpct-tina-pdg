@@ -2,6 +2,7 @@ import {
   auth, db, onAuthStateChanged, signInWithEmailAndPassword,
   createUserWithEmailAndPassword, signOut, doc, getDoc, setDoc, updateDoc,
   addDoc, collection, query, where, onSnapshot, serverTimestamp,
+  getDocs, deleteDoc,
   creerCompteSecondaire, uploaderPhotoProfil,
 } from "./firebase-config.js";
 
@@ -1112,6 +1113,69 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
       }
     }
   );
+});
+
+// --- Réinitialisation complète (PDG y compris) — retour à l'écran de création d'entreprise ---
+async function reinitialiserTout() {
+  const collectionsASupprimer = [
+    "users", "contracts", "payments", "decaissements",
+    "membres_en_attente_validation", "withdrawalRequests",
+    "prets", "remboursements_prets", "versements_collecteur",
+    "interets_prets_repartis", "codes_parrainage", "propositions_reconduction",
+  ];
+
+  try {
+    for (const nomCollection of collectionsASupprimer) {
+      const snap = await getDocs(collection(db, nomCollection));
+      for (const d of snap.docs) {
+        await deleteDoc(doc(db, nomCollection, d.id));
+      }
+    }
+    await deleteDoc(doc(db, "entreprise", "info"));
+
+    state.unsubscribers.forEach((u) => u());
+    state.unsubscribers = [];
+    state.entreprise = null;
+    state.currentUser = null;
+
+    try {
+      if (auth.currentUser) await auth.currentUser.delete();
+    } catch (e) {
+      // Si la suppression du compte Auth échoue (session ancienne), on se contente de se déconnecter
+    }
+    try { await signOut(auth); } catch (e) { /* déjà déconnecté si le compte Auth a été supprimé */ }
+
+    notifier("Application réinitialisée. Redémarrage...", "succes");
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur lors de la réinitialisation : " + err.message, "erreur");
+  }
+}
+
+document.getElementById("btn-reinitialiser-tout")?.addEventListener("click", () => {
+  ouvrirModal(`
+    <h2 style="color:#c0392b;">⚠️ Réinitialiser complètement l'application ?</h2>
+    <p class="subtitle-sm">Cette action supprimera <b>définitivement</b> toutes les données : entreprise, PDG, collecteurs, membres, contrats, versements, prêts, retraits. L'application redémarrera comme à l'installation. Cette action est <b>irréversible</b>.</p>
+    <div class="field-row">
+      <label>Tapez REINITIALISER pour confirmer</label>
+      <input type="text" id="confirmation-reset" placeholder="REINITIALISER" />
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+      <button type="button" class="btn btn-danger" id="modal-confirmer-reset" style="flex:1;">Tout supprimer</button>
+    </div>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("modal-confirmer-reset").addEventListener("click", async () => {
+    const valeur = (document.getElementById("confirmation-reset").value || "").trim().toUpperCase();
+    if (valeur !== "REINITIALISER") {
+      notifier("Veuillez taper exactement REINITIALISER pour confirmer.", "erreur");
+      return;
+    }
+    fermerModal();
+    await reinitialiserTout();
+  });
 });
 
 demarrer();
