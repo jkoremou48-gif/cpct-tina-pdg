@@ -198,40 +198,6 @@ function lancerDashboard() {
   state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets);
 }
 
-function renderApercu() {
-  const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
-  const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
-  const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
-  const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse;
-
-  // Solde global des épargnes = versements confirmés − retraits confirmés − prêts actifs en cours + remboursements reçus
-  const totalRetraitsConfirmes = (state.retraitsConfirmes || []).reduce((s, r) => s + Number(r.montant || 0), 0);
-  const totalPretsEnCours = state.prets.filter((p) => p.statut === "actif").reduce((s, p) => s + Number(p.montant_initial || 0), 0);
-  const totalRemboursements = (state.remboursements || []).reduce((s, r) => s + Number(r.montant || 0), 0);
-  const soldeGlobalEpargnes = totalEpargnes - totalRetraitsConfirmes - totalPretsEnCours + totalRemboursements;
-
-  document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
-  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionsDisponibles);
-  document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
-  document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
-
-  const cles = Object.keys(parMois).sort().reverse();
-  const container = document.getElementById("monthly-breakdown");
-  if (cles.length === 0) {
-    container.innerHTML = `<p class="empty-state">Aucune donnée pour le moment.</p>`;
-  } else {
-    container.innerHTML = cles.slice(0, 12).map((cle) => `
-      <div class="monthly-row">
-        <span class="monthly-mois">${nomMois(cle)}</span>
-        <span class="monthly-detail">
-          Épargnes : <b class="epargne">${formatGNF(parMois[cle].epargnes)}</b><br/>
-          Commissions : <b class="commission">${formatGNF(parMois[cle].commissions)}</b>
-        </span>
-      </div>
-    `).join("");
-  }
-}
-
 function render() {
   renderApercu();
   renderCollecteurs();
@@ -247,7 +213,13 @@ function renderApercu() {
   const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
   const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse;
 
-  document.getElementById("stat-total-epargnes").textContent = formatGNF(totalEpargnes);
+  // Solde global des épargnes = versements confirmés − retraits confirmés − prêts actifs en cours + remboursements reçus
+  const totalRetraitsConfirmes = (state.retraitsConfirmes || []).reduce((s, r) => s + Number(r.montant || 0), 0);
+  const totalPretsEnCours = state.prets.filter((p) => p.statut === "actif").reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+  const totalRemboursements = (state.remboursements || []).reduce((s, r) => s + Number(r.montant || 0), 0);
+  const soldeGlobalEpargnes = totalEpargnes - totalRetraitsConfirmes - totalPretsEnCours + totalRemboursements;
+
+  document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
   document.getElementById("stat-total-commissions").textContent = formatGNF(commissionsDisponibles);
   document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
   document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
