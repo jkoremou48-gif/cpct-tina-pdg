@@ -9,6 +9,13 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css" />
+<style>
+  .avatar-pdg { width: 44px; height: 44px; border-radius: 50%; object-fit: cover; background: #ddd; display: inline-block; vertical-align: middle; cursor: pointer; }
+  .avatar-mini { width: 32px; height: 32px; border-radius: 50%; object-fit: cover; background: #ddd; margin-right: 8px; vertical-align: middle; }
+  .collapsible-title { cursor: pointer; }
+  .collapsible-title::after { content: " ▾"; font-size: 12px; }
+  .collapsible-title.ouvert::after { content: " ▴"; }
+</style>
 </head>
 <body>
 
@@ -62,6 +69,9 @@
         <label>E-mail (identifiant de connexion)
           <input type="email" name="email" required />
         </label>
+        <label>Résidence
+          <input type="text" name="residence" required placeholder="Ex : Wonkifong, Coyah" />
+        </label>
         <label>Mot de passe
           <input type="password" name="password" required minlength="6" />
         </label>
@@ -89,11 +99,18 @@
 
   <section id="screen-dashboard" class="screen hidden">
     <header class="topbar">
-      <div>
-        <p class="eyebrow" id="db-entreprise-nom">—</p>
-        <h1 id="db-pdg-nom">—</h1>
+      <div style="display:flex; align-items:center; gap:12px;">
+        <img id="pdg-avatar" class="avatar-pdg" src="" alt="Photo de profil" />
+        <div>
+          <p class="eyebrow" id="db-entreprise-nom">—</p>
+          <h1 id="db-pdg-nom">—</h1>
+        </div>
       </div>
-      <button id="btn-logout" class="btn btn-ghost">Déconnexion</button>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <label class="btn btn-ghost-sm" for="pdg-avatar-input" style="cursor:pointer;">Changer la photo</label>
+        <input type="file" id="pdg-avatar-input" accept="image/*" class="hidden" />
+        <button id="btn-logout" class="btn btn-ghost">Déconnexion</button>
+      </div>
     </header>
 
     <div id="banner-substitution" class="banner-substitution hidden">
@@ -136,9 +153,9 @@
       </div>
 
       <div class="card">
-        <h2>Historique mensuel</h2>
+        <h2 class="collapsible-title" id="titre-historique-mensuel">Historique mensuel</h2>
         <p class="subtitle-sm">Épargnes collectées et commissions générées, mois par mois.</p>
-        <div id="monthly-breakdown" class="monthly-list"></div>
+        <div id="monthly-breakdown" class="monthly-list hidden"></div>
       </div>
     </div>
 
@@ -153,6 +170,7 @@
     <div id="tab-membres" class="tab-panel hidden">
       <div class="list-header">
         <h2>Membres</h2>
+        <button id="btn-nouveau-membre-pdg" class="btn btn-secondary btn-sm">+ Nouveau membre</button>
         <input type="search" id="recherche-membres" placeholder="Rechercher un membre..." />
       </div>
       <div id="entete-membres"></div>
