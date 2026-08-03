@@ -20,6 +20,12 @@ import {
   onSnapshot,
   serverTimestamp,
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import {
+  getStorage,
+  ref,
+  uploadBytes,
+  getDownloadURL,
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyCJkP6sOu-gbZwum8vQVqllFIHgrtUxQMc",
@@ -33,12 +39,8 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig, "pdg");
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
-// --- Création d'un compte utilisateur SANS déconnecter le PDG ---
-// Firebase Auth connecte automatiquement tout compte fraîchement créé sur
-// l'instance "auth" utilisée pour le créer. Pour créer le compte d'un membre
-// (ou d'un autre utilisateur) pendant que le PDG reste connecté, on passe par
-// une application Firebase secondaire temporaire, isolée de la session principale.
 async function creerCompteSecondaire(email, password) {
   const secondaryApp = initializeApp(firebaseConfig, "Secondary-" + Date.now());
   const secondaryAuth = getAuth(secondaryApp);
@@ -54,9 +56,18 @@ async function creerCompteSecondaire(email, password) {
   }
 }
 
+// --- Upload d'une photo de profil vers Storage, retourne l'URL publique ---
+async function uploaderPhotoProfil(uid, file) {
+  const chemin = `photos_profil/${uid}.jpg`;
+  const storageRef = ref(storage, chemin);
+  await uploadBytes(storageRef, file);
+  return await getDownloadURL(storageRef);
+}
+
 export {
   auth,
   db,
+  storage,
   onAuthStateChanged,
   signInWithEmailAndPassword,
   createUserWithEmailAndPassword,
@@ -73,4 +84,5 @@ export {
   onSnapshot,
   serverTimestamp,
   creerCompteSecondaire,
+  uploaderPhotoProfil,
 };
