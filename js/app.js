@@ -3,7 +3,7 @@ import {
   createUserWithEmailAndPassword, signOut, doc, getDoc, setDoc, updateDoc,
   addDoc, collection, query, where, onSnapshot, serverTimestamp,
   getDocs, deleteDoc,
-  creerCompteSecondaire, uploaderPhotoProfil,
+  creerCompteSecondaire, uploaderPhotoProfil, changerMotDePasse,
 } from "./firebase-config.js";
 
 import {
@@ -159,11 +159,75 @@ document.getElementById("pdg-avatar-input").addEventListener("change", async (e)
   }
 });
 
+// --- Changement de mot de passe ---
+function ajouterBoutonChangerMotDePasse() {
+  if (document.getElementById("btn-changer-mdp")) return;
+  const btnLogout = document.getElementById("btn-logout");
+  if (!btnLogout) return;
+  btnLogout.insertAdjacentHTML(
+    "beforebegin",
+    `<button id="btn-changer-mdp" class="btn btn-ghost">Changer mon mot de passe</button>`
+  );
+  document.getElementById("btn-changer-mdp").addEventListener("click", ouvrirChangementMotDePasse);
+}
+
+function ouvrirChangementMotDePasse() {
+  ouvrirModal(`
+    <h2>Changer mon mot de passe</h2>
+    <p class="subtitle-sm">Confirmez votre mot de passe actuel puis saisissez le nouveau.</p>
+    <form id="form-changer-mdp">
+      <div class="field-row">
+        <label>Mot de passe actuel</label>
+        <input type="password" name="ancien" required />
+      </div>
+      <div class="field-row">
+        <label>Nouveau mot de passe (6 caractères min)</label>
+        <input type="password" name="nouveau" minlength="6" required />
+      </div>
+      <div class="field-row">
+        <label>Confirmer le nouveau mot de passe</label>
+        <input type="password" name="confirmation" minlength="6" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Confirmer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-changer-mdp").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const ancien = fd.get("ancien");
+    const nouveau = fd.get("nouveau");
+    const confirmation = fd.get("confirmation");
+
+    if (nouveau !== confirmation) {
+      notifier("Les deux mots de passe ne correspondent pas.", "erreur");
+      return;
+    }
+
+    try {
+      await changerMotDePasse(state.currentUser.email, ancien, nouveau);
+      notifier("Mot de passe modifié avec succès.", "succes");
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      if (err.code === "auth/wrong-password" || err.code === "auth/invalid-credential") {
+        notifier("Mot de passe actuel incorrect.", "erreur");
+      } else {
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    }
+  });
+}
+
 function lancerDashboard() {
   showScreen("screen-dashboard");
   document.getElementById("db-entreprise-nom").textContent = state.entreprise?.nom || "CPCT-TINA";
   document.getElementById("db-pdg-nom").textContent = state.currentUser.nom;
   document.getElementById("pdg-avatar").src = state.currentUser.photoURL || AVATAR_DEFAUT;
+  ajouterBoutonChangerMotDePasse();
 
   const unsubUsers = onSnapshot(collection(db, "users"), (snap) => {
     state.users = snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
