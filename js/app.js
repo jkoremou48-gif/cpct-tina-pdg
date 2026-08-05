@@ -28,6 +28,7 @@ const state = {
   retraits: [],
   retraitsConfirmes: [],
   interetsPartages: [],
+  retraitsCommission: [],
   unsubscribers: [],
 };
 let creationEnCours = false;
@@ -216,7 +217,11 @@ function lancerDashboard() {
     state.interetsPartages = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets);
+  const unsubRetraitsCommission = onSnapshot(collection(db, "retraits_commission"), (snap) => {
+    state.retraitsCommission = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets, unsubRetraitsCommission);
 }
 
 function render() {
@@ -232,12 +237,17 @@ function renderApercu() {
   const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
   const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
-  const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse;
+  const totalRetraitsCommissionPdg = state.retraitsCommission
+    .filter((r) => r.beneficiaire_role === "pdg" && r.statut === "confirme")
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse - totalRetraitsCommissionPdg;
 
   const totalRetraitsConfirmes = (state.retraitsConfirmes || []).reduce((s, r) => s + Number(r.montant || 0), 0);
   const totalPretsEnCours = state.prets.filter((p) => p.statut === "actif").reduce((s, p) => s + Number(p.montant_initial || 0), 0);
   const totalRemboursements = (state.remboursements || []).reduce((s, r) => s + Number(r.montant || 0), 0);
-  const soldeGlobalEpargnes = totalEpargnes - totalRetraitsConfirmes - totalPretsEnCours + totalRemboursements;
+  const totalInteretsRecuperes = state.interetsPartages.reduce((s, i) => s + Number(i.montant_collecteur || 0) + Number(i.montant_pdg || 0), 0);
+  const totalCapitalRembourse = Math.max(0, totalRemboursements - totalInteretsRecuperes);
+  const soldeGlobalEpargnes = totalEpargnes - totalRetraitsConfirmes - totalPretsEnCours + totalCapitalRembourse;
 
   document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
   document.getElementById("stat-total-commissions").textContent = formatGNF(commissionsDisponibles);
@@ -288,6 +298,27 @@ function avatarImg(u, taille) {
   return `<img class="${classe}" src="${u && u.photoURL ? u.photoURL : AVATAR_DEFAUT}" alt="${u ? u.nom : ''}" />`;
 }
 
+// --- Commission PDG (part 70%) générée à travers un collecteur donné ---
+function calculerCommissionPdgParCollecteur(collecteurId) {
+  const jour1Confirmes = state.payments.filter(
+    (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
+  );
+  const totalJour1Confirme = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
+  const commissionPdgInscriptions = totalJour1Confirme * 0.70;
+
+  const interetsPdgCollecteur = state.interetsPartages
+    .filter((i) => i.collecteur_id === collecteurId)
+    .reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+
+  const commissionPdgTotale = commissionPdgInscriptions + interetsPdgCollecteur;
+
+  const retraitsPdgConfirmes = state.retraitsCommission
+    .filter((r) => r.beneficiaire_role === "pdg" && r.collecteur_id === collecteurId && r.statut === "confirme")
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+
+  return Math.max(0, commissionPdgTotale - retraitsPdgConfirmes);
+}
+
 function renderCollecteurs() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const container = document.getElementById("liste-collecteurs");
@@ -325,6 +356,8 @@ function renderCollecteurs() {
     const pretsCollecteur = state.prets.filter((p) => p.collecteur_id === c.uid && p.statut === "actif");
     const totalPretsEnCours = pretsCollecteur.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
 
+    const commissionPdgDisponible = calculerCommissionPdgParCollecteur(c.uid);
+
     return `
       <div class="entity-card" data-uid="${c.uid}">
         <div class="entity-card-top">
@@ -344,8 +377,10 @@ function renderCollecteurs() {
         <div class="detail-line"><span>Versé au PDG</span><span>${formatGNF(TV)}</span></div>
         <div class="detail-line"><span>Reste à verser</span><span style="${resteAVerser > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${formatGNF(resteAVerser)}</span></div>
         <div class="detail-line"><span>Prêts en cours (ses membres)</span><span>${formatGNF(totalPretsEnCours)}</span></div>
+        <div class="detail-line"><span>Ma commission via ce collecteur</span><span style="font-weight:bold;">${formatGNF(commissionPdgDisponible)}</span></div>
         <div class="entity-actions">
           <button class="btn btn-secondary btn-sm" data-action="enregistrer-versement" data-uid="${c.uid}" data-nom="${c.nom}">Enregistrer un versement</button>
+          ${commissionPdgDisponible > 0 ? `<button class="btn btn-secondary btn-sm" data-action="retirer-commission-pdg" data-uid="${c.uid}" data-nom="${c.nom}" data-disponible="${commissionPdgDisponible}">Retirer ma commission</button>` : ""}
           ${c.statut === "actif" ? `<button class="btn btn-ghost-sm" data-action="suspendre" data-uid="${c.uid}">Suspendre</button>` : ""}
           ${c.statut === "suspendu" ? `<button class="btn btn-ghost-sm" data-action="reactiver" data-uid="${c.uid}">Réactiver</button>` : ""}
           ${c.statut !== "licencie" ? `<button class="btn btn-danger btn-sm" data-action="licencier" data-uid="${c.uid}">Licencier</button>` : ""}
@@ -355,6 +390,48 @@ function renderCollecteurs() {
       </div>
     `;
   }).join("");
+}
+
+function ouvrirRetraitCommissionPdg(collecteurId, nom, disponible) {
+  ouvrirModal(`
+    <h2>Retirer ma commission — via ${nom}</h2>
+    <p class="subtitle-sm">Commission PDG disponible pour ce collecteur : <b>${formatGNF(disponible)}</b></p>
+    <form id="form-retrait-commission-pdg">
+      <div class="field-row">
+        <label>Montant à retirer (GNF)</label>
+        <input type="number" name="montant" min="1" max="${disponible}" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Confirmer le retrait</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-retrait-commission-pdg").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const montant = Number(new FormData(e.target).get("montant"));
+    if (montant > disponible) {
+      notifier("Montant supérieur à la commission disponible pour ce collecteur.", "erreur");
+      return;
+    }
+    try {
+      await addDoc(collection(db, "retraits_commission"), {
+        beneficiaire_role: "pdg",
+        collecteur_id: collecteurId,
+        collecteur_nom: nom,
+        montant,
+        statut: "confirme",
+        date: serverTimestamp(),
+        date_confirmation: serverTimestamp(),
+      });
+      notifier("Retrait de commission enregistré.", "succes");
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
 }
 
 function ouvrirVersementCollecteur(collecteurId, nom) {
@@ -406,10 +483,14 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
   }
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
-  const { action, uid, nom } = btn.dataset;
+  const { action, uid, nom, disponible } = btn.dataset;
 
   if (action === "enregistrer-versement") {
     ouvrirVersementCollecteur(uid, nom);
+    return;
+  }
+  if (action === "retirer-commission-pdg") {
+    ouvrirRetraitCommissionPdg(uid, nom, Number(disponible));
     return;
   }
   if (action === "suspendre" || action === "reactiver") {
@@ -893,7 +974,10 @@ document.getElementById("btn-decaisser").addEventListener("click", () => {
   const { totalCommissions } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
   const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
-  const disponible = totalCommissions + totalInteretsPdg - totalDecaisse;
+  const totalRetraitsCommissionPdg = state.retraitsCommission
+    .filter((r) => r.beneficiaire_role === "pdg" && r.statut === "confirme")
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  const disponible = totalCommissions + totalInteretsPdg - totalDecaisse - totalRetraitsCommissionPdg;
   ouvrirModal(`
     <h2>Décaisser des commissions</h2>
     <p class="subtitle-sm">Montant disponible : <b>${formatGNF(disponible)}</b></p>
@@ -1012,16 +1096,20 @@ function renderRetraits() {
   const container = document.getElementById("liste-retraits");
   if (!container) return;
 
-  if (state.retraits.length === 0) {
+  const demandesCommission = state.retraitsCommission.filter(
+    (r) => r.beneficiaire_role === "collecteur" && r.statut === "en_attente"
+  );
+
+  if (state.retraits.length === 0 && demandesCommission.length === 0) {
     container.innerHTML = `<p class="empty-state">Aucune demande de retrait en attente.</p>`;
     return;
   }
 
-  container.innerHTML = state.retraits.map((r) => {
+  const htmlRetraitsMembres = state.retraits.map((r) => {
     const membre = state.users.find((u) => u.uid === r.memberId);
     const info = infoTypeRetrait(r.type);
     return `
-      <div class="entity-card" data-id="${r.id}">
+      <div class="entity-card" data-id="${r.id}" data-kind="retrait">
         <div class="entity-card-top">
           <div>
             <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
@@ -1035,9 +1123,42 @@ function renderRetraits() {
       </div>
     `;
   }).join("");
+
+  const htmlCommission = demandesCommission.map((r) => `
+    <div class="entity-card" data-id="${r.id}" data-kind="commission">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${r.collecteur_nom || "Collecteur"}</p>
+          <p class="entity-sub">Retrait de sa commission (collecteur)</p>
+        </div>
+        <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
+      </div>
+      <div class="entity-actions">
+        <button class="btn btn-primary btn-sm" data-action="confirmer-retrait-commission" data-id="${r.id}">Confirmer</button>
+      </div>
+    </div>
+  `).join("");
+
+  container.innerHTML = htmlCommission + htmlRetraitsMembres;
 }
 
 document.getElementById("liste-retraits")?.addEventListener("click", async (e) => {
+  const btnCommission = e.target.closest("button[data-action='confirmer-retrait-commission']");
+  if (btnCommission) {
+    const id = btnCommission.dataset.id;
+    try {
+      await updateDoc(doc(db, "retraits_commission", id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+      notifier("Retrait de commission confirmé.", "succes");
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+    return;
+  }
+
   const btn = e.target.closest("button[data-action='traiter-retrait']");
   if (!btn) return;
   const id = btn.dataset.id;
@@ -1122,6 +1243,7 @@ async function reinitialiserTout() {
     "membres_en_attente_validation", "withdrawalRequests",
     "prets", "remboursements_prets", "versements_collecteur",
     "interets_prets_repartis", "codes_parrainage", "propositions_reconduction",
+    "retraits_commission",
   ];
 
   try {
