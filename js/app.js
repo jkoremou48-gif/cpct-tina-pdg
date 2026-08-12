@@ -30,6 +30,12 @@ const state = {
   interetsPartages: [],
   retraitsCommission: [],
   unsubscribers: [],
+  // --- Navigation par zone dans l'onglet Collecteurs ---
+  vueZone: {
+    niveau: "prefectures", // "prefectures" | "sous_prefectures" | "collecteurs"
+    prefecture: null,
+    sousPrefecture: null,
+  },
 };
 let creationEnCours = false;
 
@@ -383,77 +389,188 @@ function calculerCommissionPdgParCollecteur(collecteurId) {
   return Math.max(0, commissionPdgTotale - retraitsPdgConfirmes);
 }
 
-function renderCollecteurs() {
+// --- Commission du collecteur lui-même (part 30%) ---
+function calculerCommissionCollecteurPropre(collecteurId) {
+  const jour1Confirmes = state.payments.filter(
+    (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
+  );
+  const totalJour1Confirme = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
+  const commissionInscriptions = totalJour1Confirme * 0.30;
+
+  const interetsCollecteur = state.interetsPartages
+    .filter((i) => i.collecteur_id === collecteurId)
+    .reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+
+  return commissionInscriptions + interetsCollecteur;
+}
+
+// --- Solde d'épargne net (total, tous contrats actifs) d'un collecteur ---
+function calculerSoldeEpargneNetCollecteur(collecteurId) {
+  const contratsCollecteur = state.contracts.filter((ct) => ct.collecteur_id === collecteurId && ct.statut === "actif");
+  return contratsCollecteur.reduce((s, ct) => s + Math.max(0, calculerEpargneNetteContrat(ct)), 0);
+}
+
+// --- Liste des zones (préfecture/commune) ayant au moins un collecteur, triée alphabétiquement ---
+function listerPrefecturesAvecCollecteurs() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const zones = new Set();
+  collecteurs.forEach((c) => {
+    if (c.prefecture) zones.add(c.prefecture);
+  });
+  return Array.from(zones).sort((a, b) => a.localeCompare(b, "fr"));
+}
+
+// --- Liste des sous-préfectures/quartiers d'une préfecture donnée, triée alphabétiquement ---
+function listerSousPrefectures(prefecture) {
+  const collecteurs = state.users.filter(
+    (u) => u.role === "collecteur" && u.statut !== "supprime" && u.prefecture === prefecture
+  );
+  const zones = new Set();
+  collecteurs.forEach((c) => {
+    zones.add(c.sous_prefecture && c.sous_prefecture.trim() ? c.sous_prefecture.trim() : "Non précisé");
+  });
+  return Array.from(zones).sort((a, b) => a.localeCompare(b, "fr"));
+}
+
+function renderCollecteurs() {
   const container = document.getElementById("liste-collecteurs");
+  const { niveau, prefecture, sousPrefecture } = state.vueZone;
+
+  // --- Niveau 1 : liste des préfectures/communes ---
+  if (niveau === "prefectures") {
+    const zones = listerPrefecturesAvecCollecteurs();
+    if (zones.length === 0) {
+      container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré. Générez un code pour en inviter un.</p>`;
+      return;
+    }
+    container.innerHTML = `
+      <div class="card" style="margin-bottom:12px;">
+        <h2 style="font-size:15px; margin-bottom:6px;">Préfectures / Communes</h2>
+        <p class="subtitle-sm">Tapez sur une zone pour voir ses collecteurs.</p>
+      </div>
+      ${zones.map((z) => {
+        const nb = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime" && u.prefecture === z).length;
+        return `
+          <div class="entity-card" data-action="ouvrir-prefecture" data-zone="${z}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <p class="entity-nom">${z}</p>
+              <span class="badge badge-actif">${nb} collecteur(s)</span>
+            </div>
+          </div>
+        `;
+      }).join("")}
+    `;
+    return;
+  }
+
+  // --- Niveau 2 : liste des sous-préfectures/quartiers d'une préfecture ---
+  if (niveau === "sous_prefectures") {
+    const zones = listerSousPrefectures(prefecture);
+    container.innerHTML = `
+      <button class="btn btn-ghost-sm" data-action="retour-prefectures" style="margin-bottom:12px;">← Retour aux préfectures/communes</button>
+      <div class="card" style="margin-bottom:12px;">
+        <h2 style="font-size:15px; margin-bottom:6px;">${prefecture}</h2>
+        <p class="subtitle-sm">Sous-préfectures / Quartiers</p>
+      </div>
+      ${zones.map((z) => {
+        const nb = state.users.filter((u) =>
+          u.role === "collecteur" && u.statut !== "supprime" && u.prefecture === prefecture &&
+          (u.sous_prefecture && u.sous_prefecture.trim() ? u.sous_prefecture.trim() : "Non précisé") === z
+        ).length;
+        return `
+          <div class="entity-card" data-action="ouvrir-sous-prefecture" data-zone="${z}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <p class="entity-nom">${z}</p>
+              <span class="badge badge-actif">${nb} collecteur(s)</span>
+            </div>
+          </div>
+        `;
+      }).join("")}
+    `;
+    return;
+  }
+
+  // --- Niveau 3 : liste des collecteurs de cette sous-préfecture/quartier ---
+  const collecteurs = state.users.filter((u) =>
+    u.role === "collecteur" && u.statut !== "supprime" && u.prefecture === prefecture &&
+    (u.sous_prefecture && u.sous_prefecture.trim() ? u.sous_prefecture.trim() : "Non précisé") === sousPrefecture
+  );
+
   if (collecteurs.length === 0) {
-    container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré. Générez un code pour en inviter un.</p>`;
+    container.innerHTML = `
+      <button class="btn btn-ghost-sm" data-action="retour-sous-prefectures" style="margin-bottom:12px;">← Retour</button>
+      <p class="empty-state">Aucun collecteur dans cette zone.</p>
+    `;
     return;
   }
 
   const versementsConfirmesTous = state.payments.filter((p) => p.statut === "confirme");
 
-  container.innerHTML = collecteurs.map((c) => {
-    const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === c.uid).length;
-    const badgeClasse = c.statut === "actif" ? "badge-actif" : c.statut === "suspendu" ? "badge-suspendu" : "badge-licencie";
+  container.innerHTML = `
+    <button class="btn btn-ghost-sm" data-action="retour-sous-prefectures" style="margin-bottom:12px;">← Retour</button>
+    <div class="card" style="margin-bottom:12px;">
+      <h2 style="font-size:15px; margin-bottom:2px;">${prefecture} — ${sousPrefecture}</h2>
+    </div>
+    ${collecteurs.map((c) => {
+      const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === c.uid).length;
+      const badgeClasse = c.statut === "actif" ? "badge-actif" : c.statut === "suspendu" ? "badge-suspendu" : "badge-licencie";
 
-    const contratsCollecteur = state.contracts.filter((ct) => ct.collecteur_id === c.uid);
-    let nbActifs = 0;
-    let nbInactifs = 0;
-    let soldeEpargneTotal = 0;
-    contratsCollecteur.forEach((ct) => {
-      if (ct.statut === "actif") {
-        const statutCalc = calculerStatutContrat(ct, versementsConfirmesTous);
-        if (statutCalc === "inactif") {
-          nbInactifs++;
-        } else {
-          nbActifs++;
+      const contratsCollecteur = state.contracts.filter((ct) => ct.collecteur_id === c.uid);
+      let nbActifs = 0;
+      let nbInactifs = 0;
+      contratsCollecteur.forEach((ct) => {
+        if (ct.statut === "actif") {
+          const statutCalc = calculerStatutContrat(ct, versementsConfirmesTous);
+          if (statutCalc === "inactif") { nbInactifs++; } else { nbActifs++; }
         }
-        soldeEpargneTotal += Math.max(0, calculerEpargneNetteContrat(ct));
-      }
-    });
+      });
 
-    const TC = state.payments.filter((p) => p.collecteur_id === c.uid).reduce((s, p) => s + Number(p.montant || 0), 0);
-    const TV = state.versementsCollecteur.filter((v) => v.collecteur_id === c.uid).reduce((s, v) => s + Number(v.montant || 0), 0);
-    const resteAVerser = TC - TV;
+      const TC = state.payments.filter((p) => p.collecteur_id === c.uid).reduce((s, p) => s + Number(p.montant || 0), 0);
+      const TV = state.versementsCollecteur.filter((v) => v.collecteur_id === c.uid).reduce((s, v) => s + Number(v.montant || 0), 0);
+      const resteAVerser = TC - TV;
 
-    const pretsCollecteur = state.prets.filter((p) => p.collecteur_id === c.uid && p.statut === "actif");
-    const totalPretsEnCours = pretsCollecteur.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+      const pretsCollecteur = state.prets.filter((p) => p.collecteur_id === c.uid && p.statut === "actif");
+      const totalPretsEnCours = pretsCollecteur.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
 
-    const commissionPdgDisponible = calculerCommissionPdgParCollecteur(c.uid);
+      const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+      const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+      const commissionGlobale = commissionPdg + commissionCollecteur;
+      const soldeEpargneNet = calculerSoldeEpargneNetCollecteur(c.uid);
 
-    return `
-      <div class="entity-card" data-uid="${c.uid}">
-        <div class="entity-card-top">
-          <div style="display:flex; align-items:center;">
-            ${avatarImg(c, "mini")}
-            <div>
-              <p class="entity-nom" style="cursor:pointer; text-decoration:underline;" data-action="voir-membres" data-uid="${c.uid}">${c.nom}</p>
-              <p class="entity-sub">${c.telephone} · ${nbClients} client(s)</p>
+      return `
+        <div class="entity-card" data-uid="${c.uid}">
+          <div class="entity-card-top">
+            <div style="display:flex; align-items:center;">
+              ${avatarImg(c, "mini")}
+              <div>
+                <p class="entity-nom" style="cursor:pointer; text-decoration:underline;" data-action="voir-membres" data-uid="${c.uid}">${c.nom}</p>
+                <p class="entity-sub">${c.telephone} · ${nbClients} client(s)</p>
+              </div>
             </div>
+            <span class="badge ${badgeClasse}">${c.statut}</span>
           </div>
-          <span class="badge ${badgeClasse}">${c.statut}</span>
+          <div class="detail-line"><span>Commission globale (100%)</span><span style="font-weight:bold;">${formatGNF(commissionGlobale)}</span></div>
+          <div class="detail-line"><span>Commission PDG (70%)</span><span>${formatGNF(commissionPdg)}</span></div>
+          <div class="detail-line"><span>Commission collecteur (30%)</span><span>${formatGNF(commissionCollecteur)}</span></div>
+          <div class="detail-line"><span>Solde global d'épargne net</span><span>${formatGNF(soldeEpargneNet)}</span></div>
+          <div class="detail-line"><span>Contrats actifs</span><span>${nbActifs}</span></div>
+          <div class="detail-line"><span>Contrats inactifs</span><span style="${nbInactifs > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${nbInactifs}</span></div>
+          <div class="detail-line"><span>Total collecté</span><span>${formatGNF(TC)}</span></div>
+          <div class="detail-line"><span>Versé au PDG</span><span>${formatGNF(TV)}</span></div>
+          <div class="detail-line"><span>Reste à verser</span><span style="${resteAVerser > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${formatGNF(resteAVerser)}</span></div>
+          <div class="detail-line"><span>Prêts en cours (ses membres)</span><span>${formatGNF(totalPretsEnCours)}</span></div>
+          <div class="entity-actions">
+            <button class="btn btn-secondary btn-sm" data-action="enregistrer-versement" data-uid="${c.uid}" data-nom="${c.nom}">Enregistrer un versement</button>
+            ${commissionPdg > 0 ? `<button class="btn btn-secondary btn-sm" data-action="retirer-commission-pdg" data-uid="${c.uid}" data-nom="${c.nom}" data-disponible="${commissionPdg}">Retirer ma commission</button>` : ""}
+            ${c.statut !== "licencie" ? `<button class="btn btn-ghost-sm" data-action="${c.statut === 'suspendu' ? 'reactiver' : 'suspendre'}" data-uid="${c.uid}">${c.statut === 'suspendu' ? 'Lever la suspension' : 'Suspendre'}</button>` : ""}
+            ${c.statut !== "licencie" ? `<button class="btn btn-danger btn-sm" data-action="licencier" data-uid="${c.uid}">Licencier</button>` : ""}
+            ${c.statut !== "actif" ? `<button class="btn btn-secondary btn-sm" data-action="substituer" data-uid="${c.uid}" data-nom="${c.nom}">Gérer ses clients</button>` : ""}
+            <button class="btn btn-danger btn-sm" data-action="supprimer-collecteur" data-uid="${c.uid}" data-nom="${c.nom}">Supprimer</button>
+          </div>
         </div>
-        <div class="detail-line"><span>Contrats actifs</span><span>${nbActifs}</span></div>
-        <div class="detail-line"><span>Contrats inactifs</span><span style="${nbInactifs > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${nbInactifs}</span></div>
-        <div class="detail-line"><span>Solde global d'épargne</span><span>${formatGNF(soldeEpargneTotal)}</span></div>
-        <div class="detail-line"><span>Total collecté</span><span>${formatGNF(TC)}</span></div>
-        <div class="detail-line"><span>Versé au PDG</span><span>${formatGNF(TV)}</span></div>
-        <div class="detail-line"><span>Reste à verser</span><span style="${resteAVerser > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${formatGNF(resteAVerser)}</span></div>
-        <div class="detail-line"><span>Prêts en cours (ses membres)</span><span>${formatGNF(totalPretsEnCours)}</span></div>
-        <div class="detail-line"><span>Ma commission via ce collecteur</span><span style="font-weight:bold;">${formatGNF(commissionPdgDisponible)}</span></div>
-        <div class="entity-actions">
-          <button class="btn btn-secondary btn-sm" data-action="enregistrer-versement" data-uid="${c.uid}" data-nom="${c.nom}">Enregistrer un versement</button>
-          ${commissionPdgDisponible > 0 ? `<button class="btn btn-secondary btn-sm" data-action="retirer-commission-pdg" data-uid="${c.uid}" data-nom="${c.nom}" data-disponible="${commissionPdgDisponible}">Retirer ma commission</button>` : ""}
-          ${c.statut === "actif" ? `<button class="btn btn-ghost-sm" data-action="suspendre" data-uid="${c.uid}">Suspendre</button>` : ""}
-          ${c.statut === "suspendu" ? `<button class="btn btn-ghost-sm" data-action="reactiver" data-uid="${c.uid}">Réactiver</button>` : ""}
-          ${c.statut !== "licencie" ? `<button class="btn btn-danger btn-sm" data-action="licencier" data-uid="${c.uid}">Licencier</button>` : ""}
-          ${c.statut !== "actif" ? `<button class="btn btn-secondary btn-sm" data-action="substituer" data-uid="${c.uid}" data-nom="${c.nom}">Gérer ses clients</button>` : ""}
-          <button class="btn btn-danger btn-sm" data-action="supprimer-collecteur" data-uid="${c.uid}" data-nom="${c.nom}">Supprimer</button>
-        </div>
-      </div>
-    `;
-  }).join("");
+      `;
+    }).join("")}
+  `;
 }
 
 function ouvrirRetraitCommissionPdg(collecteurId, nom, disponible) {
@@ -538,6 +655,34 @@ function ouvrirVersementCollecteur(collecteurId, nom) {
 }
 
 document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
+  // --- Navigation par zone ---
+  const btnPrefecture = e.target.closest("[data-action='ouvrir-prefecture']");
+  if (btnPrefecture) {
+    state.vueZone = { niveau: "sous_prefectures", prefecture: btnPrefecture.dataset.zone, sousPrefecture: null };
+    renderCollecteurs();
+    return;
+  }
+  const btnSousPrefecture = e.target.closest("[data-action='ouvrir-sous-prefecture']");
+  if (btnSousPrefecture) {
+    state.vueZone.niveau = "collecteurs";
+    state.vueZone.sousPrefecture = btnSousPrefecture.dataset.zone;
+    renderCollecteurs();
+    return;
+  }
+  const btnRetourPrefectures = e.target.closest("[data-action='retour-prefectures']");
+  if (btnRetourPrefectures) {
+    state.vueZone = { niveau: "prefectures", prefecture: null, sousPrefecture: null };
+    renderCollecteurs();
+    return;
+  }
+  const btnRetourSousPrefectures = e.target.closest("[data-action='retour-sous-prefectures']");
+  if (btnRetourSousPrefectures) {
+    state.vueZone.niveau = "sous_prefectures";
+    state.vueZone.sousPrefecture = null;
+    renderCollecteurs();
+    return;
+  }
+
   const nomCliquable = e.target.closest("[data-action='voir-membres']");
   if (nomCliquable) {
     state.collecteurSelectionne = nomCliquable.dataset.uid;
@@ -559,7 +704,7 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
   }
   if (action === "suspendre" || action === "reactiver") {
     await updateDoc(doc(db, "users", uid), { statut: action === "suspendre" ? "suspendu" : "actif" });
-    notifier(action === "suspendre" ? "Collecteur suspendu." : "Collecteur réactivé.", "succes");
+    notifier(action === "suspendre" ? "Collecteur suspendu." : "Suspension levée.", "succes");
   }
   if (action === "licencier") {
     ouvrirModalConfirmation(
