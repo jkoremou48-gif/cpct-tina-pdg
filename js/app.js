@@ -560,6 +560,7 @@ function renderCollecteurs() {
           <div class="detail-line"><span>Reste à verser</span><span style="${resteAVerser > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${formatGNF(resteAVerser)}</span></div>
           <div class="detail-line"><span>Prêts en cours (ses membres)</span><span>${formatGNF(totalPretsEnCours)}</span></div>
           <div class="entity-actions">
+            <button class="btn btn-secondary btn-sm" data-action="modifier-zone" data-uid="${c.uid}" data-nom="${c.nom}" data-prefecture="${c.prefecture || ''}" data-sous-prefecture="${c.sous_prefecture || ''}">Modifier la zone</button>
             <button class="btn btn-secondary btn-sm" data-action="enregistrer-versement" data-uid="${c.uid}" data-nom="${c.nom}">Enregistrer un versement</button>
             ${commissionPdg > 0 ? `<button class="btn btn-secondary btn-sm" data-action="retirer-commission-pdg" data-uid="${c.uid}" data-nom="${c.nom}" data-disponible="${commissionPdg}">Retirer ma commission</button>` : ""}
             ${c.statut !== "licencie" ? `<button class="btn btn-ghost-sm" data-action="${c.statut === 'suspendu' ? 'reactiver' : 'suspendre'}" data-uid="${c.uid}">${c.statut === 'suspendu' ? 'Lever la suspension' : 'Suspendre'}</button>` : ""}
@@ -571,6 +572,55 @@ function renderCollecteurs() {
       `;
     }).join("")}
   `;
+}
+
+// --- Modification de la zone d'un collecteur existant (comptes créés avant la capture de zone) ---
+function ouvrirModificationZone(uid, nom, prefectureActuelle, sousPrefectureActuelle) {
+  const listePrefectures = [
+    "Beyla", "Boffa", "Boké", "Coyah", "Dabola", "Dalaba", "Dinguiraye",
+    "Dixinn (commune de Conakry)", "Dubréka", "Faranah", "Forécariah", "Fria",
+    "Gaoual", "Guéckédou", "Kaloum (commune de Conakry)", "Kankan", "Kérouané",
+    "Kindia", "Kissidougou", "Koubia", "Koundara", "Kouroussa", "Labé",
+    "Lélouma", "Lola", "Macenta", "Mali", "Mamou", "Mandiana",
+    "Matam (commune de Conakry)", "Matoto (commune de Conakry)", "Nzérékoré",
+    "Pita", "Ratoma (commune de Conakry)", "Siguiri", "Télimélé", "Tougué", "Yomou",
+  ];
+  ouvrirModal(`
+    <h2>Modifier la zone — ${nom}</h2>
+    <p class="subtitle-sm">Cette information est utilisée pour classer ce collecteur dans les listes et rapports par zone.</p>
+    <form id="form-modifier-zone">
+      <div class="field-row">
+        <label>Préfecture / Commune</label>
+        <select name="prefecture" required>
+          <option value="">-- Choisir --</option>
+          ${listePrefectures.map((p) => `<option value="${p}" ${p === prefectureActuelle ? "selected" : ""}>${p}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Sous-préfecture / Quartier</label>
+        <input type="text" name="sous_prefecture" value="${sousPrefectureActuelle || ''}" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-modifier-zone").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const prefecture = fd.get("prefecture").trim();
+    const sousPrefecture = fd.get("sous_prefecture").trim();
+    try {
+      await updateDoc(doc(db, "users", uid), { prefecture, sous_prefecture: sousPrefecture });
+      notifier("Zone mise à jour.", "succes");
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
 }
 
 function ouvrirRetraitCommissionPdg(collecteurId, nom, disponible) {
@@ -692,8 +742,12 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
   }
   const btn = e.target.closest("button[data-action]");
   if (!btn) return;
-  const { action, uid, nom, disponible } = btn.dataset;
+  const { action, uid, nom, disponible, prefecture, sousPrefecture: sousPrefectureDataset } = btn.dataset;
 
+  if (action === "modifier-zone") {
+    ouvrirModificationZone(uid, nom, prefecture, btn.dataset.sousPrefecture);
+    return;
+  }
   if (action === "enregistrer-versement") {
     ouvrirVersementCollecteur(uid, nom);
     return;
@@ -1444,6 +1498,265 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
     }
   );
 });
+
+// ==========================================================
+// --- Rubrique RAPPORTS : par période (jour/semaine/mois/année),
+//     collecteurs classés par zone, + brochure PDF nationale ---
+// ==========================================================
+
+function obtenirBornesPeriode(type) {
+  const maintenant = new Date();
+  let debut, fin;
+  if (type === "jour") {
+    debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 0, 0, 0);
+    fin = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 23, 59, 59, 999);
+  } else if (type === "semaine") {
+    const jourSemaine = maintenant.getDay();
+    const decalageLundi = jourSemaine === 0 ? 6 : jourSemaine - 1;
+    debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate() - decalageLundi, 0, 0, 0);
+    fin = new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + 6, 23, 59, 59, 999);
+  } else if (type === "mois") {
+    debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), 1, 0, 0, 0);
+    fin = new Date(maintenant.getFullYear(), maintenant.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else {
+    debut = new Date(maintenant.getFullYear(), 0, 1, 0, 0, 0);
+    fin = new Date(maintenant.getFullYear(), 11, 31, 23, 59, 59, 999);
+  }
+  return { debut, fin };
+}
+
+function libellePeriode(type) {
+  const labels = { jour: "Journalier", semaine: "Hebdomadaire", mois: "Mensuel", annee: "Annuel" };
+  return labels[type] || type;
+}
+
+function dateDansPeriode(champDate, debut, fin) {
+  if (!champDate) return false;
+  const d = champDate.toDate ? champDate.toDate() : new Date(champDate);
+  return d >= debut && d <= fin;
+}
+
+function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
+  const jour1Periode = state.payments.filter(
+    (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1 &&
+      dateDansPeriode(p.date_confirmation || p.date, debut, fin)
+  );
+  const totalJour1Periode = jour1Periode.reduce((s, p) => s + Number(p.montant || 0), 0);
+  const commissionPdgInscriptions = totalJour1Periode * 0.70;
+  const commissionCollecteurInscriptions = totalJour1Periode * 0.30;
+
+  const interetsPeriode = state.interetsPartages.filter(
+    (i) => i.collecteur_id === collecteurId && dateDansPeriode(i.date, debut, fin)
+  );
+  const interetsPdgPeriode = interetsPeriode.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const interetsCollecteurPeriode = interetsPeriode.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+
+  const commissionPdg = commissionPdgInscriptions + interetsPdgPeriode;
+  const commissionCollecteur = commissionCollecteurInscriptions + interetsCollecteurPeriode;
+  const commissionGlobale = commissionPdg + commissionCollecteur;
+
+  const soldeEpargneNetPeriode = state.payments.filter(
+    (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero > 1 &&
+      dateDansPeriode(p.date_confirmation || p.date, debut, fin)
+  ).reduce((s, p) => s + Number(p.montant || 0), 0);
+
+  return { commissionGlobale, commissionPdg, commissionCollecteur, soldeEpargneNetPeriode };
+}
+
+function regrouperCollecteursParZone() {
+  const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const zones = {};
+  collecteurs.forEach((c) => {
+    const pref = c.prefecture && c.prefecture.trim() ? c.prefecture.trim() : "Non précisé";
+    const sousPref = c.sous_prefecture && c.sous_prefecture.trim() ? c.sous_prefecture.trim() : "Non précisé";
+    if (!zones[pref]) zones[pref] = {};
+    if (!zones[pref][sousPref]) zones[pref][sousPref] = [];
+    zones[pref][sousPref].push(c);
+  });
+  return zones;
+}
+
+function renderRapport(type) {
+  const { debut, fin } = obtenirBornesPeriode(type);
+  const zones = regrouperCollecteursParZone();
+  const prefecturesTriees = Object.keys(zones).sort((a, b) => a.localeCompare(b, "fr"));
+
+  const entete = document.getElementById("rapport-entete");
+  if (entete) {
+    entete.innerHTML = `
+      <div class="card" style="margin-bottom:12px;">
+        <h2 style="font-size:15px;">Rapport ${libellePeriode(type)}</h2>
+        <p class="subtitle-sm">Du ${formatDate(debut)} au ${formatDate(fin)}</p>
+      </div>
+    `;
+  }
+
+  const container = document.getElementById("rapport-contenu");
+  if (!container) return;
+
+  if (prefecturesTriees.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré.</p>`;
+    return;
+  }
+
+  let totalGlobalCommission = 0, totalGlobalPdg = 0, totalGlobalCollecteur = 0, totalGlobalEpargne = 0;
+  let html = "";
+
+  prefecturesTriees.forEach((pref) => {
+    html += `<h3 style="margin-top:16px; margin-bottom:6px; font-size:15px;">${pref}</h3>`;
+    const sousPrefsTriees = Object.keys(zones[pref]).sort((a, b) => a.localeCompare(b, "fr"));
+    sousPrefsTriees.forEach((sousPref) => {
+      html += `<p style="font-weight:bold; font-size:13px; color:#666; margin:8px 0 4px;">${sousPref}</p>`;
+      zones[pref][sousPref].forEach((c) => {
+        const chiffres = calculerChiffresPeriodeCollecteur(c.uid, debut, fin);
+        totalGlobalCommission += chiffres.commissionGlobale;
+        totalGlobalPdg += chiffres.commissionPdg;
+        totalGlobalCollecteur += chiffres.commissionCollecteur;
+        totalGlobalEpargne += chiffres.soldeEpargneNetPeriode;
+        html += `
+          <div class="entity-card">
+            <div class="entity-card-top">
+              <p class="entity-nom">${c.nom}</p>
+              <span class="badge badge-actif">${c.statut}</span>
+            </div>
+            <div class="detail-line"><span>Commission globale</span><span style="font-weight:bold;">${formatGNF(chiffres.commissionGlobale)}</span></div>
+            <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(chiffres.commissionPdg)}</span></div>
+            <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(chiffres.commissionCollecteur)}</span></div>
+            <div class="detail-line"><span>Solde d'épargne net (période)</span><span>${formatGNF(chiffres.soldeEpargneNetPeriode)}</span></div>
+          </div>
+        `;
+      });
+    });
+  });
+
+  html += `
+    <div class="card" style="margin-top:16px; background:#f4f6f8;">
+      <h3 style="font-size:14px;">Totaux de la période</h3>
+      <div class="detail-line"><span>Commission globale</span><span style="font-weight:bold;">${formatGNF(totalGlobalCommission)}</span></div>
+      <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(totalGlobalPdg)}</span></div>
+      <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(totalGlobalCollecteur)}</span></div>
+      <div class="detail-line"><span>Solde d'épargne net (période)</span><span>${formatGNF(totalGlobalEpargne)}</span></div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+document.getElementById("btn-rapport")?.addEventListener("click", () => {
+  ouvrirModal(`
+    <h2>Choisir le type de rapport</h2>
+    <p class="subtitle-sm">Sélectionnez la période souhaitée. Les collecteurs seront affichés classés par zone.</p>
+    <div class="modal-actions" style="flex-direction:column; gap:8px;">
+      <button class="btn btn-secondary" data-periode="jour" style="width:100%;">Journalier</button>
+      <button class="btn btn-secondary" data-periode="semaine" style="width:100%;">Hebdomadaire</button>
+      <button class="btn btn-secondary" data-periode="mois" style="width:100%;">Mensuel</button>
+      <button class="btn btn-secondary" data-periode="annee" style="width:100%;">Annuel</button>
+    </div>
+  `);
+  document.querySelectorAll("[data-periode]").forEach((b) => {
+    b.addEventListener("click", () => {
+      renderRapport(b.dataset.periode);
+      fermerModal();
+    });
+  });
+});
+
+function genererBrochureNationalePdf() {
+  const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const collecteursTries = [...collecteurs].sort((a, b) => {
+    const prefA = a.prefecture && a.prefecture.trim() ? a.prefecture.trim() : "Non précisé";
+    const prefB = b.prefecture && b.prefecture.trim() ? b.prefecture.trim() : "Non précisé";
+    if (prefA !== prefB) return prefA.localeCompare(prefB, "fr");
+    const sousA = a.sous_prefecture && a.sous_prefecture.trim() ? a.sous_prefecture.trim() : "Non précisé";
+    const sousB = b.sous_prefecture && b.sous_prefecture.trim() ? b.sous_prefecture.trim() : "Non précisé";
+    return sousA.localeCompare(sousB, "fr");
+  });
+
+  if (collecteursTries.length === 0) {
+    notifier("Aucun collecteur à inclure dans le rapport national.", "erreur");
+    return;
+  }
+
+  let lignes = "";
+  collecteursTries.forEach((c, index) => {
+    const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+    const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+    const commissionTotale = commissionPdg + commissionCollecteur;
+    const soldeEpargne = calculerSoldeEpargneNetCollecteur(c.uid);
+    const pref = c.prefecture && c.prefecture.trim() ? c.prefecture.trim() : "Non précisé";
+    const sousPref = c.sous_prefecture && c.sous_prefecture.trim() ? c.sous_prefecture.trim() : "Non précisé";
+    lignes += `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${pref} / ${sousPref}</td>
+        <td>${c.nom}</td>
+        <td>${c.telephone || ""}</td>
+        <td>${formatGNF(soldeEpargne)}</td>
+        <td>${formatGNF(commissionTotale)}</td>
+        <td>${formatGNF(commissionPdg)}</td>
+        <td>${formatGNF(commissionCollecteur)}</td>
+        <td></td>
+      </tr>
+    `;
+  });
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Rapport national — ${state.entreprise?.nom || "CPCT-TINA"}</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; color: #222; }
+        h1 { font-size: 18px; margin-bottom: 4px; }
+        p.sub { color: #666; font-size: 12px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { border: 1px solid #999; padding: 6px 4px; text-align: left; }
+        th { background: #14213D; color: white; }
+        td:nth-child(1) { text-align: center; width: 28px; }
+        td:last-child, th:last-child { min-width: 90px; }
+        @media print {
+          @page { size: A4 landscape; margin: 12mm; }
+        }
+      </style>
+    </head>
+    <body>
+      <h1>${state.entreprise?.nom || "CPCT-TINA"} — Rapport national des collecteurs</h1>
+      <p class="sub">Généré le ${formatDate(new Date())} · ${collecteursTries.length} collecteur(s)</p>
+      <table>
+        <thead>
+          <tr>
+            <th>N°</th>
+            <th>Préfecture / Sous-préfecture</th>
+            <th>Prénom et nom du collecteur</th>
+            <th>Téléphone</th>
+            <th>Solde d'épargne</th>
+            <th>Commission totale</th>
+            <th>Commission PDG</th>
+            <th>Commission collecteur</th>
+            <th>Signature superviseur</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lignes}
+        </tbody>
+      </table>
+      <script>window.onload = () => { window.print(); };</script>
+    </body>
+    </html>
+  `;
+
+  const fenetre = window.open("", "_blank");
+  if (!fenetre) {
+    notifier("Le navigateur a bloqué l'ouverture de la fenêtre d'impression. Autorisez les pop-ups pour ce site.", "erreur");
+    return;
+  }
+  fenetre.document.open();
+  fenetre.document.write(html);
+  fenetre.document.close();
+}
+
+document.getElementById("btn-rapport-national-pdf")?.addEventListener("click", genererBrochureNationalePdf);
 
 // --- Réinitialisation complète (PDG y compris) — retour à l'écran de création d'entreprise ---
 async function reinitialiserTout() {
