@@ -540,6 +540,138 @@ function renderCollecteurs() {
       return `
         <div class="entity-card" data-uid="${c.uid}">
           <div class="entity-card-top">
+function listerPrefecturesAvecCollecteurs() {
+  const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const zones = new Set();
+  collecteurs.forEach((c) => {
+    zones.add(c.prefecture && c.prefecture.trim() ? c.prefecture.trim() : "Non précisé");
+  });
+  return Array.from(zones).sort((a, b) => a.localeCompare(b, "fr"));
+}
+
+// --- Liste des sous-préfectures/quartiers d'une préfecture donnée, triée alphabétiquement ---
+function listerSousPrefectures(prefecture) {
+  const collecteurs = state.users.filter(
+    (u) => u.role === "collecteur" && u.statut !== "supprime" &&
+    (u.prefecture && u.prefecture.trim() ? u.prefecture.trim() : "Non précisé") === prefecture
+  );
+  const zones = new Set();
+  collecteurs.forEach((c) => {
+    zones.add(c.sous_prefecture && c.sous_prefecture.trim() ? c.sous_prefecture.trim() : "Non précisé");
+  });
+  return Array.from(zones).sort((a, b) => a.localeCompare(b, "fr"));
+}
+
+function renderCollecteurs() {
+  const container = document.getElementById("liste-collecteurs");
+  const { niveau, prefecture, sousPrefecture } = state.vueZone;
+
+  // --- Niveau 1 : liste des préfectures/communes ---
+  if (niveau === "prefectures") {
+    const zones = listerPrefecturesAvecCollecteurs();
+    if (zones.length === 0) {
+      container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré. Générez un code pour en inviter un.</p>`;
+      return;
+    }
+    container.innerHTML = `
+      <div class="card" style="margin-bottom:12px;">
+        <h2 style="font-size:15px; margin-bottom:6px;">Préfectures / Communes</h2>
+        <p class="subtitle-sm">Tapez sur une zone pour voir ses collecteurs.</p>
+      </div>
+      ${zones.map((z) => {
+        const nb = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime" && (u.prefecture && u.prefecture.trim() ? u.prefecture.trim() : "Non précisé") === z).length;
+        return `
+          <div class="entity-card" data-action="ouvrir-prefecture" data-zone="${z}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <p class="entity-nom">${z}</p>
+              <span class="badge badge-actif">${nb} collecteur(s)</span>
+            </div>
+          </div>
+        `;
+      }).join("")}
+    `;
+    return;
+  }
+
+  // --- Niveau 2 : liste des sous-préfectures/quartiers d'une préfecture ---
+  if (niveau === "sous_prefectures") {
+    const zones = listerSousPrefectures(prefecture);
+    container.innerHTML = `
+      <button class="btn btn-ghost-sm" data-action="retour-prefectures" style="margin-bottom:12px;">← Retour aux préfectures/communes</button>
+      <div class="card" style="margin-bottom:12px;">
+        <h2 style="font-size:15px; margin-bottom:6px;">${prefecture}</h2>
+        <p class="subtitle-sm">Sous-préfectures / Quartiers</p>
+      </div>
+      ${zones.map((z) => {
+        const nb = state.users.filter((u) =>
+          u.role === "collecteur" && u.statut !== "supprime" &&
+          (u.prefecture && u.prefecture.trim() ? u.prefecture.trim() : "Non précisé") === prefecture &&
+          (u.sous_prefecture && u.sous_prefecture.trim() ? u.sous_prefecture.trim() : "Non précisé") === z
+        ).length;
+        return `
+          <div class="entity-card" data-action="ouvrir-sous-prefecture" data-zone="${z}" style="cursor:pointer;">
+            <div class="entity-card-top">
+              <p class="entity-nom">${z}</p>
+              <span class="badge badge-actif">${nb} collecteur(s)</span>
+            </div>
+          </div>
+        `;
+      }).join("")}
+    `;
+    return;
+  }
+
+  // --- Niveau 3 : liste des collecteurs de cette sous-préfecture/quartier ---
+  const collecteurs = state.users.filter((u) =>
+    u.role === "collecteur" && u.statut !== "supprime" &&
+    (u.prefecture && u.prefecture.trim() ? u.prefecture.trim() : "Non précisé") === prefecture &&
+    (u.sous_prefecture && u.sous_prefecture.trim() ? u.sous_prefecture.trim() : "Non précisé") === sousPrefecture
+  );
+
+  if (collecteurs.length === 0) {
+    container.innerHTML = `
+      <button class="btn btn-ghost-sm" data-action="retour-sous-prefectures" style="margin-bottom:12px;">← Retour</button>
+      <p class="empty-state">Aucun collecteur dans cette zone.</p>
+    `;
+    return;
+  }
+
+  const versementsConfirmesTous = state.payments.filter((p) => p.statut === "confirme");
+
+  container.innerHTML = `
+    <button class="btn btn-ghost-sm" data-action="retour-sous-prefectures" style="margin-bottom:12px;">← Retour</button>
+    <div class="card" style="margin-bottom:12px;">
+      <h2 style="font-size:15px; margin-bottom:2px;">${prefecture} — ${sousPrefecture}</h2>
+    </div>
+    ${collecteurs.map((c) => {
+      const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === c.uid).length;
+      const badgeClasse = c.statut === "actif" ? "badge-actif" : c.statut === "suspendu" ? "badge-suspendu" : "badge-licencie";
+
+      const contratsCollecteur = state.contracts.filter((ct) => ct.collecteur_id === c.uid);
+      let nbActifs = 0;
+      let nbInactifs = 0;
+      contratsCollecteur.forEach((ct) => {
+        if (ct.statut === "actif") {
+          const statutCalc = calculerStatutContrat(ct, versementsConfirmesTous);
+          if (statutCalc === "inactif") { nbInactifs++; } else { nbActifs++; }
+        }
+      });
+
+      const TC = state.payments.filter((p) => p.collecteur_id === c.uid).reduce((s, p) => s + Number(p.montant || 0), 0);
+      const TV = state.versementsCollecteur.filter((v) => v.collecteur_id === c.uid).reduce((s, v) => s + Number(v.montant || 0), 0);
+      const resteAVerser = TC - TV;
+
+      const pretsCollecteur = state.prets.filter((p) => p.collecteur_id === c.uid && p.statut === "actif");
+      const totalPretsEnCours = pretsCollecteur.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+
+      const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+      const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+      const commissionGlobale = commissionPdg + commissionCollecteur;
+      const soldeEpargneNet = calculerSoldeEpargneNetCollecteur(c.uid);
+
+      return `
+        <div class="entity-card" data-uid="${c.uid}">
+          <div class="entity-card-top">
             <div style="display:flex; align-items:center;">
               ${avatarImg(c, "mini")}
               <div>
