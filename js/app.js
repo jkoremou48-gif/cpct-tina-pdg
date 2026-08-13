@@ -1418,7 +1418,7 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
     } catch (err) {
       console.error(err);
       notifier("Erreur : " + err.message, "erreur");
-    }
+      }
     return;
   }
 
@@ -1511,7 +1511,7 @@ function obtenirBornesPeriode(type) {
     debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 0, 0, 0);
     fin = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 23, 59, 59, 999);
   } else if (type === "semaine") {
-    const jourSemaine = maintenant.getDay();
+    const jourSemaine = maintenant.getDay(); // 0 = dimanche
     const decalageLundi = jourSemaine === 0 ? 6 : jourSemaine - 1;
     debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate() - decalageLundi, 0, 0, 0);
     fin = new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + 6, 23, 59, 59, 999);
@@ -1536,6 +1536,7 @@ function dateDansPeriode(champDate, debut, fin) {
   return d >= debut && d <= fin;
 }
 
+// --- Calcule commission globale/PDG/collecteur + épargne nette collectée, pour UN collecteur, sur UNE période ---
 function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
   const jour1Periode = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1 &&
@@ -1563,6 +1564,7 @@ function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
   return { commissionGlobale, commissionPdg, commissionCollecteur, soldeEpargneNetPeriode };
 }
 
+// --- Regroupe tous les collecteurs par préfecture puis sous-préfecture, triés alphabétiquement ---
 function regrouperCollecteursParZone() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const zones = {};
@@ -1591,7 +1593,7 @@ function renderRapport(type) {
     `;
   }
 
-  const container = document.getElementById("rapport-contenu");
+  const container = document.getElementById("rapport-resultats");
   if (!container) return;
 
   if (prefecturesTriees.length === 0) {
@@ -1642,7 +1644,7 @@ function renderRapport(type) {
   container.innerHTML = html;
 }
 
-document.getElementById("btn-rapport")?.addEventListener("click", () => {
+document.getElementById("btn-generer-rapport")?.addEventListener("click", () => {
   ouvrirModal(`
     <h2>Choisir le type de rapport</h2>
     <p class="subtitle-sm">Sélectionnez la période souhaitée. Les collecteurs seront affichés classés par zone.</p>
@@ -1661,6 +1663,7 @@ document.getElementById("btn-rapport")?.addEventListener("click", () => {
   });
 });
 
+// --- Brochure PDF nationale imprimable : tous les collecteurs, chiffres cumulés à ce jour ---
 function genererBrochureNationalePdf() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const collecteursTries = [...collecteurs].sort((a, b) => {
