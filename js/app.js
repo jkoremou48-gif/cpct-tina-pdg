@@ -437,7 +437,6 @@ function renderCollecteurs() {
   const container = document.getElementById("liste-collecteurs");
   const { niveau, prefecture, sousPrefecture } = state.vueZone;
 
-  // --- Niveau 1 : liste des préfectures/communes ---
   if (niveau === "prefectures") {
     const zones = listerPrefecturesAvecCollecteurs();
     if (zones.length === 0) {
@@ -464,7 +463,6 @@ function renderCollecteurs() {
     return;
   }
 
-  // --- Niveau 2 : liste des sous-préfectures/quartiers d'une préfecture ---
   if (niveau === "sous_prefectures") {
     const zones = listerSousPrefectures(prefecture);
     container.innerHTML = `
@@ -492,7 +490,6 @@ function renderCollecteurs() {
     return;
   }
 
-  // --- Niveau 3 : liste des collecteurs de cette sous-préfecture/quartier ---
   const collecteurs = state.users.filter((u) =>
     u.role === "collecteur" && u.statut !== "supprime" &&
     (u.prefecture && u.prefecture.trim() ? u.prefecture.trim() : "Non précisé") === prefecture &&
@@ -577,7 +574,6 @@ function renderCollecteurs() {
   `;
 }
 
-// --- Modification de la zone d'un collecteur existant (comptes créés avant la capture de zone) ---
 function ouvrirModificationZone(uid, nom, prefectureActuelle, sousPrefectureActuelle) {
   const listePrefectures = [
     "Beyla", "Boffa", "Boké", "Coyah", "Dabola", "Dalaba", "Dinguiraye",
@@ -708,7 +704,6 @@ function ouvrirVersementCollecteur(collecteurId, nom) {
 }
 
 document.getElementById("liste-collecteurs").addEventListener("click", async (e) => {
-  // --- Navigation par zone ---
   const btnPrefecture = e.target.closest("[data-action='ouvrir-prefecture']");
   if (btnPrefecture) {
     state.vueZone = { niveau: "sous_prefectures", prefecture: btnPrefecture.dataset.zone, sousPrefecture: null };
@@ -941,7 +936,6 @@ function renderMembres() {
 
 document.getElementById("recherche-membres").addEventListener("input", renderMembres);
 
-// --- PDG crée directement un membre (choisit son collecteur) ---
 document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () => {
   const collecteursActifs = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif");
   if (collecteursActifs.length === 0) {
@@ -1302,52 +1296,130 @@ async function genererEtAfficherCode(type) {
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
 }
 
+// ==========================================================
+// --- Onglet "Confirmations" : historique des encaissements ---
+// Chantier "autonomie collecteur" (13 août 2026) : le PDG ne confirme plus
+// les encaissements (ils sont confirmés directement par le collecteur).
+// Il garde uniquement un pouvoir d'ANNULATION en cas d'erreur.
+// Les anciens versements restés au statut "collecte" (avant ce chantier)
+// gardent un bouton "Confirmer" temporaire pour ne pas perdre de données.
+// ==========================================================
+
 function renderConfirmations() {
   const container = document.getElementById("liste-confirmations");
   if (!container) return;
 
-  const enAttente = state.payments.filter((p) => p.statut === "collecte");
+  const enAttenteAncien = state.payments.filter((p) => p.statut === "collecte");
+  const confirmes = state.payments
+    .filter((p) => p.statut === "confirme")
+    .sort((a, b) => {
+      const da = a.date && a.date.toDate ? a.date.toDate() : new Date(0);
+      const dbb = b.date && b.date.toDate ? b.date.toDate() : new Date(0);
+      return dbb - da;
+    })
+    .slice(0, 100);
 
-  if (enAttente.length === 0) {
-    container.innerHTML = `<p class="empty-state">Aucun versement en attente de confirmation.</p>`;
-    return;
+  let html = "";
+
+  if (enAttenteAncien.length > 0) {
+    html += `<h3 style="font-size:14px; margin-bottom:8px;">Anciens versements non confirmés</h3>`;
+    html += enAttenteAncien.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Confirmer</button>
+          </div>
+        </div>
+      `;
+    }).join("");
   }
 
-  container.innerHTML = enAttente.map((p) => {
-    const membre = state.users.find((u) => u.uid === p.membre_id);
-    const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
-    return `
-      <div class="entity-card" data-id="${p.id}">
-        <div class="entity-card-top">
-          <div>
-            <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
-            <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique des encaissements</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Confirmés automatiquement par le collecteur. Vous pouvez annuler une opération en cas d'erreur.</p>`;
+  if (confirmes.length === 0) {
+    html += `<p class="empty-state">Aucun encaissement pour le moment.</p>`;
+  } else {
+    html += confirmes.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"} · ${formatDate(p.date)}</p>
+            </div>
+            <span class="badge badge-actif">${formatGNF(p.montant)}</span>
           </div>
-          <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+          </div>
         </div>
-        <div class="entity-actions">
-          <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Confirmer</button>
-        </div>
-      </div>
-    `;
-  }).join("");
+      `;
+    }).join("");
+  }
+
+  container.innerHTML = html;
 }
 
 document.getElementById("liste-confirmations")?.addEventListener("click", async (e) => {
-  const btn = e.target.closest("button[data-action='confirmer']");
-  if (!btn) return;
-  const id = btn.dataset.id;
-  try {
-    await updateDoc(doc(db, "payments", id), {
-      statut: "confirme",
-      date_confirmation: serverTimestamp(),
-    });
-    notifier("Versement confirmé.", "succes");
-  } catch (err) {
-    console.error(err);
-    notifier("Erreur : " + err.message, "erreur");
+  const btnConfirmer = e.target.closest("button[data-action='confirmer']");
+  if (btnConfirmer) {
+    const id = btnConfirmer.dataset.id;
+    try {
+      await updateDoc(doc(db, "payments", id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+      notifier("Versement confirmé.", "succes");
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+    return;
+  }
+
+  const btnAnnuler = e.target.closest("button[data-action='annuler-encaissement']");
+  if (btnAnnuler) {
+    const id = btnAnnuler.dataset.id;
+    const payment = state.payments.find((p) => p.id === id);
+    if (!payment) return;
+    ouvrirModalConfirmation(
+      "Annuler cet encaissement ?",
+      `Montant : ${formatGNF(payment.montant)} · Jour ${payment.jour_numero}. Cette opération ne sera plus comptée dans les soldes.`,
+      async () => {
+        try {
+          await annulerEncaissement(payment);
+          notifier("Encaissement annulé.", "succes");
+          fermerModal();
+        } catch (err) {
+          console.error(err);
+          notifier("Erreur : " + err.message, "erreur");
+        }
+      }
+    );
   }
 });
+
+async function annulerEncaissement(payment) {
+  await updateDoc(doc(db, "payments", payment.id), {
+    statut: "annule",
+    date_annulation: serverTimestamp(),
+    annule_par: state.currentUser.uid,
+  });
+  if (payment.jour_numero >= 31 && payment.contract_id) {
+    await updateDoc(doc(db, "contracts", payment.contract_id), { statut: "actif" });
+  }
+}
 
 function infoTypeRetrait(type) {
   const infos = {
@@ -1358,6 +1430,16 @@ function infoTypeRetrait(type) {
   return infos[type] || { libelle: 'Retrait d\'épargne', classe: 'badge-actif', actionLabel: 'Confirmer' };
 }
 
+// ==========================================================
+// --- Onglet "Retraits" ---
+// Chantier "autonomie collecteur" (13 août 2026) : le PDG ne valide plus
+// les demandes de retrait/prêt des membres (le collecteur du membre s'en
+// charge désormais). Le PDG garde : la confirmation des demandes de retrait
+// de commission des collecteurs (inchangé), une vue d'information sur les
+// demandes en attente côté collecteur, et un pouvoir d'ANNULATION sur les
+// retraits déjà confirmés, en cas d'erreur.
+// ==========================================================
+
 function renderRetraits() {
   const container = document.getElementById("liste-retraits");
   if (!container) return;
@@ -1366,46 +1448,77 @@ function renderRetraits() {
     (r) => r.beneficiaire_role === "collecteur" && r.statut === "en_attente"
   );
 
-  if (state.retraits.length === 0 && demandesCommission.length === 0) {
-    container.innerHTML = `<p class="empty-state">Aucune demande de retrait en attente.</p>`;
+  let html = "";
+
+  if (demandesCommission.length > 0) {
+    html += `<h3 style="font-size:14px; margin-bottom:8px;">Demandes de retrait de commission (collecteurs)</h3>`;
+    html += demandesCommission.map((r) => `
+      <div class="entity-card" data-id="${r.id}" data-kind="commission">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${r.collecteur_nom || "Collecteur"}</p>
+            <p class="entity-sub">Retrait de sa commission (collecteur)</p>
+          </div>
+          <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
+        </div>
+        <div class="entity-actions">
+          <button class="btn btn-primary btn-sm" data-action="confirmer-retrait-commission" data-id="${r.id}">Confirmer</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  if (state.retraits.length > 0) {
+    html += `<h3 style="font-size:14px; margin:16px 0 8px;">En attente de traitement par le collecteur</h3>
+      <p class="subtitle-sm" style="margin-bottom:10px;">Ces demandes sont désormais confirmées ou annulées directement par le collecteur du membre.</p>`;
+    html += state.retraits.map((r) => {
+      const membre = state.users.find((u) => u.uid === r.memberId);
+      const info = infoTypeRetrait(r.type);
+      return `
+        <div class="entity-card" data-id="${r.id}" data-kind="retrait-info">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
+              <p class="entity-sub">${info.libelle}</p>
+            </div>
+            <span class="badge ${info.classe}">${formatGNF(r.montant)}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique des retraits confirmés</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Vous pouvez annuler un retrait en cas d'erreur.</p>`;
+  if (state.retraitsConfirmes.length === 0) {
+    html += `<p class="empty-state">Aucun retrait confirmé pour le moment.</p>`;
+  } else {
+    html += state.retraitsConfirmes.map((r) => {
+      const membre = state.users.find((u) => u.uid === r.memberId);
+      const info = infoTypeRetrait(r.type);
+      return `
+        <div class="entity-card" data-id="${r.id}" data-kind="retrait-confirme">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
+              <p class="entity-sub">${info.libelle}</p>
+            </div>
+            <span class="badge badge-actif">${formatGNF(r.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-retrait" data-id="${r.id}">Annuler</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  if (demandesCommission.length === 0 && state.retraits.length === 0 && state.retraitsConfirmes.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune demande de retrait pour le moment.</p>`;
     return;
   }
 
-  const htmlRetraitsMembres = state.retraits.map((r) => {
-    const membre = state.users.find((u) => u.uid === r.memberId);
-    const info = infoTypeRetrait(r.type);
-    return `
-      <div class="entity-card" data-id="${r.id}" data-kind="retrait">
-        <div class="entity-card-top">
-          <div>
-            <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
-            <p class="entity-sub">${info.libelle}</p>
-          </div>
-          <span class="badge ${info.classe}">${formatGNF(r.montant)}</span>
-        </div>
-        <div class="entity-actions">
-          <button class="btn btn-primary btn-sm" data-action="traiter-retrait" data-id="${r.id}">${info.actionLabel}</button>
-        </div>
-      </div>
-    `;
-  }).join("");
-
-  const htmlCommission = demandesCommission.map((r) => `
-    <div class="entity-card" data-id="${r.id}" data-kind="commission">
-      <div class="entity-card-top">
-        <div>
-          <p class="entity-nom">${r.collecteur_nom || "Collecteur"}</p>
-          <p class="entity-sub">Retrait de sa commission (collecteur)</p>
-        </div>
-        <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
-      </div>
-      <div class="entity-actions">
-        <button class="btn btn-primary btn-sm" data-action="confirmer-retrait-commission" data-id="${r.id}">Confirmer</button>
-      </div>
-    </div>
-  `).join("");
-
-  container.innerHTML = htmlCommission + htmlRetraitsMembres;
+  container.innerHTML = html;
 }
 
 document.getElementById("liste-retraits")?.addEventListener("click", async (e) => {
@@ -1421,86 +1534,71 @@ document.getElementById("liste-retraits")?.addEventListener("click", async (e) =
     } catch (err) {
       console.error(err);
       notifier("Erreur : " + err.message, "erreur");
-      }
+    }
     return;
   }
 
-  const btn = e.target.closest("button[data-action='traiter-retrait']");
-  if (!btn) return;
-  const id = btn.dataset.id;
-  const retrait = state.retraits.find((r) => r.id === id);
-  if (!retrait) return;
-  const info = infoTypeRetrait(retrait.type);
-
-  ouvrirModalConfirmation(
-    `${info.actionLabel} ce retrait ?`,
-    `Montant : ${formatGNF(retrait.montant)} · Type : ${info.libelle}`,
-    async () => {
-      try {
-        if (retrait.type === "pret") {
-          const contrat = state.contracts.find((c) => c.id === retrait.contractId);
-          const collecteurId = contrat ? contrat.collecteur_id : (state.users.find((u) => u.uid === retrait.memberId)?.parrain_id || null);
-
-          await addDoc(collection(db, "prets"), {
-            membre_id: retrait.memberId,
-            collecteur_id: collecteurId,
-            contract_id: retrait.contractId || null,
-            montant_initial: retrait.montant,
-            taux_hebdo: 0.02,
-            statut: "actif",
-            interet_deja_reconnu: 0,
-            date_debut: serverTimestamp(),
-            pdg_id: state.currentUser.uid,
-          });
-
-          await updateDoc(doc(db, "withdrawalRequests", id), {
-            statut: "confirme",
-            date_confirmation: serverTimestamp(),
-          });
-
-          notifier("Prêt validé et enregistré.", "succes");
-        } else if (retrait.type === "retrait_final") {
-          await updateDoc(doc(db, "withdrawalRequests", id), {
-            statut: "confirme",
-            date_confirmation: serverTimestamp(),
-          });
-
-          if (retrait.contractId) {
-            await updateDoc(doc(db, "contracts", retrait.contractId), {
-              statut: "cloture",
-              epargne_soldee: true,
-            });
-          }
-
-          await addDoc(collection(db, "propositions_reconduction"), {
-            membre_id: retrait.memberId,
-            contrat_precedent_id: retrait.contractId || null,
-            statut: "en_attente",
-            date_creation: serverTimestamp(),
-          });
-
-          notifier("Retrait confirmé, contrat clôturé. Le membre peut choisir de reconduire.", "succes");
-        } else {
-          await updateDoc(doc(db, "withdrawalRequests", id), {
-            statut: "confirme",
-            date_confirmation: serverTimestamp(),
-          });
-
-          const contratsNonSoldes = trouverContratsNonSoldes(retrait.memberId, null);
-          for (const contrat of contratsNonSoldes) {
-            await updateDoc(doc(db, "contracts", contrat.id), { epargne_soldee: true });
-          }
-
-          notifier("Retrait traité.", "succes");
+  const btnAnnuler = e.target.closest("button[data-action='annuler-retrait']");
+  if (btnAnnuler) {
+    const id = btnAnnuler.dataset.id;
+    const retrait = state.retraitsConfirmes.find((r) => r.id === id);
+    if (!retrait) return;
+    const info = infoTypeRetrait(retrait.type);
+    ouvrirModalConfirmation(
+      "Annuler ce retrait ?",
+      `Montant : ${formatGNF(retrait.montant)} · Type : ${info.libelle}. Cette action tente de rétablir la situation précédente (contrat, prêt).`,
+      async () => {
+        try {
+          await annulerRetrait(retrait);
+          notifier("Retrait annulé.", "succes");
+          fermerModal();
+        } catch (err) {
+          console.error(err);
+          notifier("Erreur : " + err.message, "erreur");
         }
-        fermerModal();
-      } catch (err) {
-        console.error(err);
-        notifier("Erreur : " + err.message, "erreur");
+      }
+    );
+  }
+});
+
+async function annulerRetrait(retrait) {
+  await updateDoc(doc(db, "withdrawalRequests", retrait.id), {
+    statut: "annule",
+    date_annulation: serverTimestamp(),
+    annule_par: state.currentUser.uid,
+  });
+
+  if (retrait.type === "pret") {
+    const pretAssocie = state.prets.find(
+      (p) => p.membre_id === retrait.memberId && p.contract_id === retrait.contractId && p.statut === "actif"
+    );
+    if (pretAssocie) {
+      await updateDoc(doc(db, "prets", pretAssocie.id), { statut: "annule" });
+    }
+  } else if (retrait.type === "retrait_final") {
+    if (retrait.contractId) {
+      await updateDoc(doc(db, "contracts", retrait.contractId), {
+        statut: "actif",
+        epargne_soldee: false,
+      });
+    }
+    const propositionsSnap = await getDocs(
+      query(collection(db, "propositions_reconduction"), where("contrat_precedent_id", "==", retrait.contractId || "__none__"))
+    );
+    for (const d of propositionsSnap.docs) {
+      if (d.data().statut === "en_attente") {
+        await deleteDoc(doc(db, "propositions_reconduction", d.id));
       }
     }
-  );
-});
+  } else {
+    const contratsASolder = state.contracts.filter(
+      (c) => c.membre_id === retrait.memberId && c.statut === "cloture" && c.epargne_soldee
+    );
+    for (const c of contratsASolder) {
+      await updateDoc(doc(db, "contracts", c.id), { epargne_soldee: false });
+    }
+  }
+}
 
 // ==========================================================
 // --- Rubrique RAPPORTS : par période (jour/semaine/mois/année),
@@ -1514,7 +1612,7 @@ function obtenirBornesPeriode(type) {
     debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 0, 0, 0);
     fin = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 23, 59, 59, 999);
   } else if (type === "semaine") {
-    const jourSemaine = maintenant.getDay(); // 0 = dimanche
+    const jourSemaine = maintenant.getDay();
     const decalageLundi = jourSemaine === 0 ? 6 : jourSemaine - 1;
     debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate() - decalageLundi, 0, 0, 0);
     fin = new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + 6, 23, 59, 59, 999);
@@ -1539,7 +1637,6 @@ function dateDansPeriode(champDate, debut, fin) {
   return d >= debut && d <= fin;
 }
 
-// --- Calcule commission globale/PDG/collecteur + épargne nette collectée, pour UN collecteur, sur UNE période ---
 function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
   const jour1Periode = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1 &&
@@ -1567,7 +1664,6 @@ function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
   return { commissionGlobale, commissionPdg, commissionCollecteur, soldeEpargneNetPeriode };
 }
 
-// --- Regroupe tous les collecteurs par préfecture puis sous-préfecture, triés alphabétiquement ---
 function regrouperCollecteursParZone() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const zones = {};
@@ -1666,7 +1762,6 @@ document.getElementById("btn-generer-rapport")?.addEventListener("click", () => 
   });
 });
 
-// --- Brochure PDF nationale imprimable : tous les collecteurs, chiffres cumulés à ce jour ---
 function genererBrochureNationalePdf() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const collecteursTries = [...collecteurs].sort((a, b) => {
@@ -1764,7 +1859,6 @@ function genererBrochureNationalePdf() {
 
 document.getElementById("btn-rapport-national-pdf")?.addEventListener("click", genererBrochureNationalePdf);
 
-// --- Réinitialisation complète (PDG y compris) — retour à l'écran de création d'entreprise ---
 async function reinitialiserTout() {
   const collectionsASupprimer = [
     "users", "contracts", "payments", "decaissements",
