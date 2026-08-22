@@ -7,7 +7,7 @@ import {
 } from "./firebase-config.js";
 
 import {
-  genererCodeParrain, formatGNF, formatDate, nomMois, calculerSoldes, notifier, calculerStatutContrat,
+  genererCodeParrain, formatGNF, formatDate, formatDateHeure, nomMois, calculerSoldes, notifier, calculerStatutContrat,
 } from "./utils.js";
 
 const AVATAR_DEFAUT = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23ddd'/></svg>";
@@ -29,6 +29,8 @@ const state = {
   retraitsConfirmes: [],
   interetsPartages: [],
   retraitsCommission: [],
+  diffusions: [],
+  messagesPrives: [],
   unsubscribers: [],
   // --- Navigation par zone dans l'onglet Collecteurs ---
   vueZone: {
@@ -291,7 +293,16 @@ function lancerDashboard() {
     state.retraitsCommission = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets, unsubRetraitsCommission);
+  // --- Communication collective : diffusions + messagerie privée ---
+  const unsubDiffusions = onSnapshot(collection(db, "diffusions"), (snap) => {
+    state.diffusions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubMessagesPrives = onSnapshot(collection(db, "messages_prives"), (snap) => {
+    state.messagesPrives = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets, unsubRetraitsCommission, unsubDiffusions, unsubMessagesPrives);
 }
 
 function render() {
@@ -301,6 +312,7 @@ function render() {
   renderConfirmations();
   renderMembresEnAttente();
   renderRetraits();
+  renderCommunication();
 }
 
 function renderApercu() {
@@ -1131,7 +1143,7 @@ function afficherDetailMembre(uid) {
     <div class="detail-line"><span>Cotisation journalière</span><span>${contrat ? formatGNF(contrat.montant_mise) : "—"}</span></div>
     <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
     <div class="detail-line"><span>Total épargné (épargne nette)</span><span>${formatGNF(totalVerse)}</span></div>
-    ${pret ? `<div class="detail-line"><span style="color:#c0392b;">Solde disponible (après prêt)</span><span style="color:#c0392b;"><b>${formatGNF(soldeDisponible)}</b></span></div>` : ""}
+    ${pret ? `<div class="detail-line"><span style="color:#c0392b;">Solde disponible (après prêt)</span><span style="color:#c0392b;"><b>${formatGNF(soldeDisponible)}</b></span></div>` : ''}
     ${totalNonSolde > 0 ? `<div class="detail-line"><span style="color:#c0392b;">Contrat(s) non soldé(s)</span><span style="color:#c0392b;">${formatGNF(totalNonSolde)}</span></div>` : ""}
     ${pret ? `
       <h2 style="margin-top:18px; font-size:15px; color:#c0392b;">Prêt en cours</h2>
@@ -1664,6 +1676,188 @@ async function annulerRetrait(retrait) {
 }
 
 // ==========================================================
+// --- Onglet "Communication" : diffusion collective + messagerie privée ---
+// Le PDG diffuse un message à tout un groupe (collecteurs ou membres).
+// Chaque destinataire peut répondre, mais sa réponse reste une conversation
+// PRIVÉE entre lui et le PDG uniquement (pas visible des autres destinataires).
+// Un collecteur ou un membre peut aussi écrire au PDG de sa propre initiative
+// (sera possible une fois les étapes Collecteur/Membre construites).
+// ==========================================================
+
+document.getElementById("form-diffusion")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const groupe = fd.get("groupe");
+  const contenu = fd.get("contenu").trim();
+  if (!contenu) return;
+
+  try {
+    await addDoc(collection(db, "diffusions"), {
+      expediteur_id: state.currentUser.uid,
+      expediteur_nom: state.currentUser.nom,
+      groupe_cible: groupe,
+      contenu,
+      date: serverTimestamp(),
+    });
+    notifier(`Message diffusé à tous les ${groupe === "collecteurs" ? "collecteurs" : "membres"}.`, "succes");
+    e.target.reset();
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur : " + err.message, "erreur");
+  }
+});
+
+document.getElementById("titre-historique-diffusions")?.addEventListener("click", () => {
+  const titre = document.getElementById("titre-historique-diffusions");
+  const zone = document.getElementById("liste-diffusions");
+  zone.classList.toggle("hidden");
+  titre.classList.toggle("ouvert");
+});
+
+function renderCommunication() {
+  renderDiffusions();
+  renderMessagerie();
+}
+
+function renderDiffusions() {
+  const container = document.getElementById("liste-diffusions");
+  if (!container) return;
+
+  const diffusionsTriees = [...state.diffusions].sort(
+    (a, b) => (b.date?.toMillis?.() || 0) - (a.date?.toMillis?.() || 0)
+  );
+
+  if (diffusionsTriees.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune diffusion envoyée pour le moment.</p>`;
+    return;
+  }
+
+  container.innerHTML = diffusionsTriees.map((d) => `
+    <div class="entity-card">
+      <div class="entity-card-top">
+        <p class="entity-nom">${d.groupe_cible === "collecteurs" ? "→ Tous les collecteurs" : "→ Tous les membres"}</p>
+        <span class="entity-sub">${formatDateHeure(d.date)}</span>
+      </div>
+      <p style="margin-top:6px; font-size:14px;">${d.contenu}</p>
+    </div>
+  `).join("");
+}
+
+function renderMessagerie() {
+  const container = document.getElementById("liste-messagerie");
+  if (!container) return;
+
+  // Regroupe les messages privés par interlocuteur (participant_id)
+  const conversations = {};
+  state.messagesPrives.forEach((m) => {
+    if (!conversations[m.participant_id]) {
+      conversations[m.participant_id] = {
+        participant_id: m.participant_id,
+        participant_nom: m.participant_nom,
+        participant_role: m.participant_role,
+        messages: [],
+      };
+    }
+    conversations[m.participant_id].messages.push(m);
+  });
+
+  const listeConversations = Object.values(conversations).map((conv) => {
+    conv.messages.sort((a, b) => (b.date?.toMillis?.() || 0) - (a.date?.toMillis?.() || 0));
+    conv.dernierMessage = conv.messages[0];
+    conv.nonLus = conv.messages.filter((m) => m.expediteur_role !== "pdg" && m.lu_pdg === false).length;
+    return conv;
+  }).sort((a, b) => (b.dernierMessage?.date?.toMillis?.() || 0) - (a.dernierMessage?.date?.toMillis?.() || 0));
+
+  if (listeConversations.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun message privé pour le moment.</p>`;
+    return;
+  }
+
+  container.innerHTML = listeConversations.map((conv) => `
+    <div class="entity-card" data-action="ouvrir-fil" data-participant="${conv.participant_id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${conv.participant_nom || "Utilisateur"} <span class="entity-sub">(${conv.participant_role === "collecteur" ? "collecteur" : "membre"})</span></p>
+          <p class="entity-sub">${(conv.dernierMessage.contenu || "").slice(0, 60)}${(conv.dernierMessage.contenu || "").length > 60 ? "…" : ""}</p>
+        </div>
+        ${conv.nonLus > 0 ? `<span class="badge badge-suspendu">${conv.nonLus}</span>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+document.getElementById("liste-messagerie")?.addEventListener("click", (e) => {
+  const carte = e.target.closest("[data-action='ouvrir-fil']");
+  if (!carte) return;
+  ouvrirFilMessagerie(carte.dataset.participant);
+});
+
+async function ouvrirFilMessagerie(participantId) {
+  const messages = state.messagesPrives
+    .filter((m) => m.participant_id === participantId)
+    .sort((a, b) => (a.date?.toMillis?.() || 0) - (b.date?.toMillis?.() || 0));
+
+  if (messages.length === 0) return;
+  const participantNom = messages[0].participant_nom || "Utilisateur";
+  const participantRole = messages[0].participant_role;
+
+  ouvrirModal(`
+    <h2>${participantNom} <span class="subtitle-sm">(${participantRole === "collecteur" ? "collecteur" : "membre"})</span></h2>
+    <div id="fil-messages" style="max-height:280px; overflow-y:auto; margin:10px 0; display:flex; flex-direction:column; gap:8px;">
+      ${messages.map((m) => `
+        <div style="align-self:${m.expediteur_role === "pdg" ? "flex-end" : "flex-start"}; background:${m.expediteur_role === "pdg" ? "#14213D" : "#f0f0f0"}; color:${m.expediteur_role === "pdg" ? "white" : "#222"}; border-radius:10px; padding:8px 12px; max-width:80%;">
+          <p style="font-size:14px;">${m.contenu}</p>
+          <p style="font-size:11px; opacity:0.7; margin-top:4px;">${formatDateHeure(m.date)}</p>
+        </div>
+      `).join("")}
+    </div>
+    <form id="form-reponse-privee">
+      <div class="field-row">
+        <label>Répondre</label>
+        <textarea name="contenu" rows="2" required placeholder="Votre réponse..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Envoyer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-reponse-privee").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const contenu = new FormData(e.target).get("contenu").trim();
+    if (!contenu) return;
+    try {
+      await addDoc(collection(db, "messages_prives"), {
+        participant_id: participantId,
+        participant_nom: participantNom,
+        participant_role: participantRole,
+        expediteur_id: state.currentUser.uid,
+        expediteur_role: "pdg",
+        contenu,
+        date: serverTimestamp(),
+        lu_pdg: true,
+        lu_participant: false,
+      });
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  // Marque comme lus tous les messages non-PDG de ce fil
+  const nonLus = messages.filter((m) => m.expediteur_role !== "pdg" && m.lu_pdg === false);
+  for (const m of nonLus) {
+    try {
+      await updateDoc(doc(db, "messages_prives", m.id), { lu_pdg: true });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+}
+
+// ==========================================================
 // --- Rubrique RAPPORTS : par période (jour/semaine/mois/année),
 //     collecteurs classés par zone, + brochure PDF nationale ---
 // ==========================================================
@@ -1928,7 +2122,7 @@ async function reinitialiserTout() {
     "membres_en_attente_validation", "withdrawalRequests",
     "prets", "remboursements_prets", "versements_collecteur",
     "interets_prets_repartis", "codes_parrainage", "propositions_reconduction",
-    "retraits_commission",
+    "retraits_commission", "diffusions", "messages_prives",
   ];
 
   try {
