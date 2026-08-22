@@ -1054,6 +1054,60 @@ document.getElementById("liste-membres").addEventListener("click", (e) => {
   afficherDetailMembre(card.dataset.uid);
 });
 
+// --- Modification de la cotisation journalière d'un contrat (PDG uniquement) ---
+// La commission (jour 1) est, par définition, égale à la 1ère cotisation journalière :
+// changer le montant du versement quotidien recalcule donc automatiquement la commission,
+// ainsi que tous les paiements déjà enregistrés pour ce contrat (hors paiements annulés).
+function ouvrirModificationCotisation(contrat) {
+  ouvrirModal(`
+    <h2>Modifier la cotisation journalière — ${contrat.membre_nom}</h2>
+    <p class="subtitle-sm" style="color:#c0392b;">⚠️ Ce changement recalculera automatiquement <b>tous les versements déjà enregistrés</b> pour ce contrat (y compris la commission du jour 1) avec le nouveau montant. Les paiements annulés ne sont pas concernés. Cette action est irréversible.</p>
+    <p class="subtitle-sm">Cotisation actuelle : <b>${formatGNF(contrat.montant_mise)}</b></p>
+    <form id="form-modifier-cotisation">
+      <div class="field-row">
+        <label>Nouvelle cotisation journalière (GNF)</label>
+        <input type="number" name="nouveauMontant" min="1" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-danger" style="flex:1;">Confirmer le changement</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-modifier-cotisation").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const nouveauMontant = Number(new FormData(e.target).get("nouveauMontant"));
+    if (!nouveauMontant || nouveauMontant <= 0) {
+      notifier("Montant invalide.", "erreur");
+      return;
+    }
+    await modifierCotisationContrat(contrat, nouveauMontant);
+    fermerModal();
+  });
+}
+
+async function modifierCotisationContrat(contrat, nouveauMontant) {
+  try {
+    await updateDoc(doc(db, "contracts", contrat.id), {
+      montant_mise: nouveauMontant,
+      commission: nouveauMontant,
+    });
+
+    const paiementsContrat = state.payments.filter(
+      (p) => p.contract_id === contrat.id && p.statut !== "annule"
+    );
+    for (const p of paiementsContrat) {
+      await updateDoc(doc(db, "payments", p.id), { montant: nouveauMontant });
+    }
+
+    notifier(`Cotisation mise à jour : ${paiementsContrat.length} versement(s) recalculé(s), commission du jour 1 incluse.`, "succes");
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur lors de la mise à jour : " + err.message, "erreur");
+  }
+}
+
 function afficherDetailMembre(uid) {
   const membre = state.users.find((u) => u.uid === uid);
   const contrats = state.contracts.filter((c) => c.membre_id === uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""));
@@ -1074,6 +1128,7 @@ function afficherDetailMembre(uid) {
     ${membre.residence ? `<p class="subtitle-sm">Résidence : ${membre.residence}</p>` : ""}
     <div class="detail-line"><span>Statut du contrat</span><span>${contrat ? contrat.statut : "—"}</span></div>
     <div class="detail-line"><span>Début du contrat</span><span>${contrat ? formatDate(contrat.date_debut) : "—"}</span></div>
+    <div class="detail-line"><span>Cotisation journalière</span><span>${contrat ? formatGNF(contrat.montant_mise) : "—"}</span></div>
     <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
     <div class="detail-line"><span>Total épargné (épargne nette)</span><span>${formatGNF(totalVerse)}</span></div>
     ${pret ? `<div class="detail-line"><span style="color:#c0392b;">Solde disponible (après prêt)</span><span style="color:#c0392b;"><b>${formatGNF(soldeDisponible)}</b></span></div>` : ""}
@@ -1083,6 +1138,11 @@ function afficherDetailMembre(uid) {
       <div class="detail-line"><span>Capital emprunté</span><span>${formatGNF(pret.montant_initial)}</span></div>
       <div class="detail-line"><span>Montant dû actuellement</span><span><b>${formatGNF(calculerMontantDuPret(pret))}</b></span></div>
       <div class="detail-line"><span>Date du prêt</span><span>${datePret ? formatDate(datePret) : "—"}</span></div>
+    ` : ""}
+    ${contrat && contrat.statut === "actif" ? `
+      <div class="modal-actions" style="margin-top:14px;">
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-modifier-cotisation" style="flex:1;">Modifier la cotisation journalière</button>
+      </div>
     ` : ""}
     <h2 style="margin-top:18px; font-size:15px;">Historique des versements</h2>
     <div style="max-height:220px; overflow-y:auto; margin-top:8px;">
@@ -1094,6 +1154,9 @@ function afficherDetailMembre(uid) {
   `;
   ouvrirModal(html);
   document.getElementById("btn-fermer-modal-membre").addEventListener("click", fermerModal);
+  if (contrat && contrat.statut === "actif") {
+    document.getElementById("btn-modifier-cotisation").addEventListener("click", () => ouvrirModificationCotisation(contrat));
+  }
 }
 
 function renderMembresEnAttente() {
