@@ -127,6 +127,7 @@
   <button class="tab-btn" data-tab="confirmations">Confirmations</button>
   <button class="tab-btn" data-tab="attente">Membres en attente</button>
   <button class="tab-btn" data-tab="retraits">Retraits</button>
+  <button class="tab-btn" data-tab="communication">Communication</button>
   <button class="tab-btn" data-tab="rapport">Rapport</button>
 </nav>
 
@@ -201,6 +202,40 @@
       </div>
       <p class="subtitle-sm">Traitez chaque demande de retrait envoyée par les membres.</p>
       <div id="liste-retraits" class="entity-list"></div>
+    </div>
+
+    <div id="tab-communication" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Communication</h2>
+      </div>
+
+      <div class="card">
+        <h2 style="font-size:15px; margin-bottom:6px;">Diffuser un message</h2>
+        <p class="subtitle-sm">Envoyez un message à tous les collecteurs ou à tous les membres en une seule fois.</p>
+        <form id="form-diffusion">
+          <div class="field-row">
+            <label>Destinataires</label>
+            <select name="groupe" required>
+              <option value="collecteurs">Tous les collecteurs</option>
+              <option value="membres">Tous les membres</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <label>Message</label>
+            <textarea name="contenu" rows="4" required placeholder="Votre message..."></textarea>
+          </div>
+          <button type="submit" class="btn btn-primary" style="margin-top:10px;">Diffuser</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2 class="collapsible-title" id="titre-historique-diffusions" style="font-size:15px;">Historique des diffusions</h2>
+        <div id="liste-diffusions" class="hidden" style="margin-top:10px;"></div>
+      </div>
+
+      <div class="zone-titre">Messagerie privée</div>
+      <p class="subtitle-sm" style="margin-bottom:10px;">Réponses et messages individuels de vos collecteurs et membres.</p>
+      <div id="liste-messagerie" class="entity-list"></div>
     </div>
 
     <div id="tab-rapport" class="tab-panel hidden">
