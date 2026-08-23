@@ -32,9 +32,8 @@ const state = {
   diffusions: [],
   messagesPrives: [],
   unsubscribers: [],
-  // --- Navigation par zone dans l'onglet Collecteurs ---
   vueZone: {
-    niveau: "prefectures", // "prefectures" | "sous_prefectures" | "collecteurs"
+    niveau: "prefectures",
     prefecture: null,
     sousPrefecture: null,
   },
@@ -151,7 +150,6 @@ document.getElementById("btn-logout").addEventListener("click", async () => {
   showScreen("screen-login");
 });
 
-// --- Photo de profil du PDG ---
 document.getElementById("pdg-avatar-input").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (!file || !state.currentUser) return;
@@ -167,7 +165,6 @@ document.getElementById("pdg-avatar-input").addEventListener("change", async (e)
   }
 });
 
-// --- Changement de mot de passe ---
 function ajouterBoutonChangerMotDePasse() {
   if (document.getElementById("btn-changer-mdp")) return;
   const btnLogout = document.getElementById("btn-logout");
@@ -293,7 +290,6 @@ function lancerDashboard() {
     state.retraitsCommission = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  // --- Communication collective : diffusions + messagerie privée ---
   const unsubDiffusions = onSnapshot(collection(db, "diffusions"), (snap) => {
     state.diffusions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
@@ -316,26 +312,35 @@ function render() {
 }
 
 function renderApercu() {
-  const { totalEpargnes, totalCommissions, parMois } = calculerSoldes(state.payments, state.contracts);
-  const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
-  const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
-  const totalRetraitsCommissionPdg = state.retraitsCommission
-    .filter((r) => r.beneficiaire_role === "pdg" && r.statut === "confirme")
-    .reduce((s, r) => s + Number(r.montant || 0), 0);
-  const commissionsDisponibles = totalCommissions + totalInteretsPdg - totalDecaisse - totalRetraitsCommissionPdg;
+  // --- Correctif (23 août 2026) ---
+  // L'ancien calcul utilisait calculerSoldes() (utils.js), qui ne filtrait pas
+  // les paiements par statut (comptait aussi les "collecte" non confirmés et
+  // les "annule") et ne répartissait pas la commission 70% PDG / 30% collecteur.
+  // On réutilise désormais les mêmes fonctions déjà fiables utilisées dans
+  // l'onglet "Collecteurs" (calculerCommissionPdgParCollecteur,
+  // calculerCommissionCollecteurPropre, calculerSoldeEpargneNetCollecteur),
+  // pour que l'Aperçu reflète exactement la même réalité que le détail par collecteur.
+  const collecteursTous = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
 
-  const totalRetraitsConfirmes = (state.retraitsConfirmes || []).reduce((s, r) => s + Number(r.montant || 0), 0);
-  const totalPretsEnCours = state.prets.filter((p) => p.statut === "actif").reduce((s, p) => s + Number(p.montant_initial || 0), 0);
-  const totalRemboursements = (state.remboursements || []).reduce((s, r) => s + Number(r.montant || 0), 0);
-  const totalInteretsRecuperes = state.interetsPartages.reduce((s, i) => s + Number(i.montant_collecteur || 0) + Number(i.montant_pdg || 0), 0);
-  const totalCapitalRembourse = Math.max(0, totalRemboursements - totalInteretsRecuperes);
-  const soldeGlobalEpargnes = totalEpargnes - totalRetraitsConfirmes - totalPretsEnCours + totalCapitalRembourse;
+  let commissionPdgDisponible = 0;
+  let commissionGlobaleTotale = 0;
+  let soldeGlobalEpargnes = 0;
+
+  collecteursTous.forEach((c) => {
+    const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+    const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+    commissionPdgDisponible += commissionPdg;
+    commissionGlobaleTotale += commissionPdg + commissionCollecteur;
+    soldeGlobalEpargnes += calculerSoldeEpargneNetCollecteur(c.uid);
+  });
 
   document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
-  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionsDisponibles);
+  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionPdgDisponible);
+  document.getElementById("stat-commission-globale").textContent = formatGNF(commissionGlobaleTotale);
   document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
   document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
 
+  const { parMois } = calculerSoldes(state.payments, state.contracts);
   const cles = Object.keys(parMois).sort().reverse();
   const container = document.getElementById("monthly-breakdown");
   if (cles.length === 0) {
@@ -360,7 +365,6 @@ document.getElementById("titre-historique-mensuel").addEventListener("click", ()
   titre.classList.toggle("ouvert");
 });
 
-// --- Épargne nette d'un contrat : le prêt NE la réduit PAS (règle validée le 2 août) ---
 function calculerEpargneNetteContrat(contrat) {
   const versements = state.payments.filter((p) => p.contract_id === contrat.id);
   return versements
@@ -380,7 +384,6 @@ function avatarImg(u, taille) {
   return `<img class="${classe}" src="${u && u.photoURL ? u.photoURL : AVATAR_DEFAUT}" alt="${u ? u.nom : ''}" />`;
 }
 
-// --- Commission PDG (part 70%) générée à travers un collecteur donné ---
 function calculerCommissionPdgParCollecteur(collecteurId) {
   const jour1Confirmes = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
@@ -401,7 +404,6 @@ function calculerCommissionPdgParCollecteur(collecteurId) {
   return Math.max(0, commissionPdgTotale - retraitsPdgConfirmes);
 }
 
-// --- Commission du collecteur lui-même (part 30%) ---
 function calculerCommissionCollecteurPropre(collecteurId) {
   const jour1Confirmes = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
@@ -416,13 +418,11 @@ function calculerCommissionCollecteurPropre(collecteurId) {
   return commissionInscriptions + interetsCollecteur;
 }
 
-// --- Solde d'épargne net (total, tous contrats actifs) d'un collecteur ---
 function calculerSoldeEpargneNetCollecteur(collecteurId) {
   const contratsCollecteur = state.contracts.filter((ct) => ct.collecteur_id === collecteurId && ct.statut === "actif");
   return contratsCollecteur.reduce((s, ct) => s + Math.max(0, calculerEpargneNetteContrat(ct)), 0);
 }
 
-// --- Liste des zones (préfecture/commune) ayant au moins un collecteur, triée alphabétiquement ---
 function listerPrefecturesAvecCollecteurs() {
   const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
   const zones = new Set();
@@ -432,7 +432,6 @@ function listerPrefecturesAvecCollecteurs() {
   return Array.from(zones).sort((a, b) => a.localeCompare(b, "fr"));
 }
 
-// --- Liste des sous-préfectures/quartiers d'une préfecture donnée, triée alphabétiquement ---
 function listerSousPrefectures(prefecture) {
   const collecteurs = state.users.filter(
     (u) => u.role === "collecteur" && u.statut !== "supprime" &&
@@ -1066,10 +1065,6 @@ document.getElementById("liste-membres").addEventListener("click", (e) => {
   afficherDetailMembre(card.dataset.uid);
 });
 
-// --- Modification de la cotisation journalière d'un contrat (PDG uniquement) ---
-// La commission (jour 1) est, par définition, égale à la 1ère cotisation journalière :
-// changer le montant du versement quotidien recalcule donc automatiquement la commission,
-// ainsi que tous les paiements déjà enregistrés pour ce contrat (hors paiements annulés).
 function ouvrirModificationCotisation(contrat) {
   ouvrirModal(`
     <h2>Modifier la cotisation journalière — ${contrat.membre_nom}</h2>
@@ -1371,15 +1366,6 @@ async function genererEtAfficherCode(type) {
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
 }
 
-// ==========================================================
-// --- Onglet "Confirmations" : historique des encaissements ---
-// Chantier "autonomie collecteur" (13 août 2026) : le PDG ne confirme plus
-// les encaissements (ils sont confirmés directement par le collecteur).
-// Il garde uniquement un pouvoir d'ANNULATION en cas d'erreur.
-// Les anciens versements restés au statut "collecte" (avant ce chantier)
-// gardent un bouton "Confirmer" temporaire pour ne pas perdre de données.
-// ==========================================================
-
 function renderConfirmations() {
   const container = document.getElementById("liste-confirmations");
   if (!container) return;
@@ -1504,16 +1490,6 @@ function infoTypeRetrait(type) {
   };
   return infos[type] || { libelle: 'Retrait d\'épargne', classe: 'badge-actif', actionLabel: 'Confirmer' };
 }
-
-// ==========================================================
-// --- Onglet "Retraits" ---
-// Chantier "autonomie collecteur" (13 août 2026) : le PDG ne valide plus
-// les demandes de retrait/prêt des membres (le collecteur du membre s'en
-// charge désormais). Le PDG garde : la confirmation des demandes de retrait
-// de commission des collecteurs (inchangé), une vue d'information sur les
-// demandes en attente côté collecteur, et un pouvoir d'ANNULATION sur les
-// retraits déjà confirmés, en cas d'erreur.
-// ==========================================================
 
 function renderRetraits() {
   const container = document.getElementById("liste-retraits");
@@ -1675,15 +1651,6 @@ async function annulerRetrait(retrait) {
   }
 }
 
-// ==========================================================
-// --- Onglet "Communication" : diffusion collective + messagerie privée ---
-// Le PDG diffuse un message à tout un groupe (collecteurs ou membres).
-// Chaque destinataire peut répondre, mais sa réponse reste une conversation
-// PRIVÉE entre lui et le PDG uniquement (pas visible des autres destinataires).
-// Un collecteur ou un membre peut aussi écrire au PDG de sa propre initiative
-// (sera possible une fois les étapes Collecteur/Membre construites).
-// ==========================================================
-
 document.getElementById("form-diffusion")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   const fd = new FormData(e.target);
@@ -1747,7 +1714,6 @@ function renderMessagerie() {
   const container = document.getElementById("liste-messagerie");
   if (!container) return;
 
-  // Regroupe les messages privés par interlocuteur (participant_id)
   const conversations = {};
   state.messagesPrives.forEach((m) => {
     if (!conversations[m.participant_id]) {
@@ -1846,7 +1812,6 @@ async function ouvrirFilMessagerie(participantId) {
     }
   });
 
-  // Marque comme lus tous les messages non-PDG de ce fil
   const nonLus = messages.filter((m) => m.expediteur_role !== "pdg" && m.lu_pdg === false);
   for (const m of nonLus) {
     try {
@@ -1856,11 +1821,6 @@ async function ouvrirFilMessagerie(participantId) {
     }
   }
 }
-
-// ==========================================================
-// --- Rubrique RAPPORTS : par période (jour/semaine/mois/année),
-//     collecteurs classés par zone, + brochure PDF nationale ---
-// ==========================================================
 
 function obtenirBornesPeriode(type) {
   const maintenant = new Date();
