@@ -46,6 +46,76 @@ export function nomMois(cleMoisAnnee) {
   return d.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
 }
 
+// ==========================================================
+// --- NOUVEAU (25 août 2026) : types de contrats ---
+// Le contrat "journalier" existant garde son fonctionnement propre
+// (géré directement dans les app.js : 31 jours, prêt 2%/semaine).
+// Les 2 nouveaux types partagent les mêmes règles de clôture que le
+// journalier, mais avec une durée et une périodicité différentes,
+// et un prêt à 8% par mois entamé (au lieu de 2%/semaine).
+// ==========================================================
+
+export const TYPES_CONTRAT = {
+  journalier: {
+    cle: "journalier",
+    label: "Journalier (31 jours)",
+    duree: 31,
+    unitePeriode: "jour",
+    labelPeriode: "jour",
+    labelVersement: "versement quotidien",
+  },
+  hebdomadaire: {
+    cle: "hebdomadaire",
+    label: "Hebdomadaire (52 semaines)",
+    duree: 52,
+    unitePeriode: "semaine",
+    labelPeriode: "semaine",
+    labelVersement: "versement hebdomadaire",
+  },
+  mensuel: {
+    cle: "mensuel",
+    label: "Mensuel (12 mois)",
+    duree: 12,
+    unitePeriode: "mois",
+    labelPeriode: "mois",
+    labelVersement: "versement mensuel",
+  },
+};
+
+export function infoTypeContrat(typeContrat) {
+  return TYPES_CONTRAT[typeContrat] || TYPES_CONTRAT.journalier;
+}
+
+// Nombre de mois entamés depuis une date de début (utilisé pour l'intérêt
+// à 8%/mois entamé sur les contrats hebdomadaire et mensuel).
+export function nbMoisEntames(dateDebut) {
+  const debut = dateDebut && dateDebut.toDate ? dateDebut.toDate() : new Date(dateDebut || Date.now());
+  const maintenant = new Date();
+  let mois = (maintenant.getFullYear() - debut.getFullYear()) * 12 + (maintenant.getMonth() - debut.getMonth());
+  if (maintenant.getDate() >= debut.getDate()) mois += 1; // le mois en cours est "entamé"
+  return Math.max(1, mois);
+}
+
+// Calcule le montant dû d'un prêt selon son type de contrat d'origine :
+// - "journalier" : 2%/semaine entamée (comportement historique, taux_hebdo sur le prêt)
+// - "hebdomadaire" / "mensuel" : 8%/mois entamé (taux_mensuel sur le prêt)
+export function calculerMontantDuPretGeneralise(pret, remboursements) {
+  const dejaRembourse = (remboursements || [])
+    .filter((r) => r.pret_id === pret.id)
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+
+  let montantDuBrut;
+  if (pret.type_contrat === "hebdomadaire" || pret.type_contrat === "mensuel") {
+    const nbMois = nbMoisEntames(pret.date_debut);
+    montantDuBrut = pret.montant_initial * (1 + (pret.taux_mensuel || 0.08) * nbMois);
+  } else {
+    const dateDebut = pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : new Date();
+    const nbSemaines = Math.floor((new Date() - dateDebut) / (1000 * 60 * 60 * 24 * 7)) + 1;
+    montantDuBrut = pret.montant_initial * (1 + (pret.taux_hebdo || 0.02) * nbSemaines);
+  }
+  return Math.max(0, montantDuBrut - dejaRembourse);
+}
+
 export function calculerSoldes(payments, contracts) {
   let totalEpargnes = 0;
   let totalCommissions = 0;
