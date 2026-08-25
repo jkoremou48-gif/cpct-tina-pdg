@@ -312,14 +312,6 @@ function render() {
 }
 
 function renderApercu() {
-  // --- Correctif (23 août 2026) ---
-  // L'ancien calcul utilisait calculerSoldes() (utils.js), qui ne filtrait pas
-  // les paiements par statut (comptait aussi les "collecte" non confirmés et
-  // les "annule") et ne répartissait pas la commission 70% PDG / 30% collecteur.
-  // On réutilise désormais les mêmes fonctions déjà fiables utilisées dans
-  // l'onglet "Collecteurs" (calculerCommissionPdgParCollecteur,
-  // calculerCommissionCollecteurPropre, calculerSoldeEpargneNetCollecteur),
-  // pour que l'Aperçu reflète exactement la même réalité que le détail par collecteur.
   const collecteursTous = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
 
   let commissionPdgDisponible = 0;
@@ -365,10 +357,12 @@ document.getElementById("titre-historique-mensuel").addEventListener("click", ()
   titre.classList.toggle("ouvert");
 });
 
+// --- Correctif (23 août 2026) : l'épargne du membre compte tout versement
+// NON ANNULÉ, immédiatement, sans attendre le verrouillage/confirmation à 24h.
 function calculerEpargneNetteContrat(contrat) {
   const versements = state.payments.filter((p) => p.contract_id === contrat.id);
   return versements
-    .filter((p) => p.statut === "confirme" && p.jour_numero > 1)
+    .filter((p) => p.statut !== "annule" && p.jour_numero > 1)
     .reduce((s, p) => s + Number(p.montant || 0), 0);
 }
 
@@ -515,7 +509,7 @@ function renderCollecteurs() {
     return;
   }
 
-  const versementsConfirmesTous = state.payments.filter((p) => p.statut === "confirme");
+  const versementsConfirmesTous = state.payments.filter((p) => p.statut !== "annule");
 
   container.innerHTML = `
     <button class="btn btn-ghost-sm" data-action="retour-sous-prefectures" style="margin-bottom:12px;">← Retour</button>
@@ -904,13 +898,13 @@ function renderMembres() {
     return;
   }
 
-  const versementsConfirmesTous = state.payments.filter((p) => p.statut === "confirme");
+  const versementsConfirmesTous = state.payments.filter((p) => p.statut !== "annule");
 
   container.innerHTML = membres.map((m) => {
     const contrat = state.contracts.find((c) => c.membre_id === m.uid && c.statut === "actif")
       || state.contracts.filter((c) => c.membre_id === m.uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""))[0];
     const versements = state.payments.filter((p) => contrat && p.contract_id === contrat.id);
-    const totalVerse = versements.filter((p) => p.statut === "confirme" && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+    const totalVerse = versements.filter((p) => p.statut !== "annule" && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
     let statutContrat = contrat ? contrat.statut : "aucun contrat";
     let estInactif = false;
     if (contrat && calculerStatutContrat(contrat, versementsConfirmesTous) === "inactif") {
@@ -1115,12 +1109,12 @@ async function modifierCotisationContrat(contrat, nouveauMontant) {
   }
 }
 
-function afficherDetailMembre(uid) {
+async function afficherDetailMembre(uid) {
   const membre = state.users.find((u) => u.uid === uid);
   const contrats = state.contracts.filter((c) => c.membre_id === uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""));
   const contrat = contrats[0];
   const versements = contrat ? state.payments.filter((p) => p.contract_id === contrat.id).sort((a, b) => a.jour_numero - b.jour_numero) : [];
-  const totalVerse = versements.filter((p) => p.statut === 'confirme' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+  const totalVerse = versements.filter((p) => p.statut !== 'annule' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
 
   const contratsNonSoldes = trouverContratsNonSoldes(uid, contrat ? contrat.id : null);
   const totalNonSolde = contratsNonSoldes.reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
@@ -1366,12 +1360,36 @@ async function genererEtAfficherCode(type) {
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
 }
 
+// ==========================================================
+// --- Onglet "Confirmations" : verrouillage à 24h (23 août 2026) ---
+// Un versement compte IMMÉDIATEMENT dans le solde du membre dès sa saisie
+// par le collecteur (statut "collecte"). Le PDG peut l'ANNULER à tout moment
+// tant qu'il n'est pas verrouillé (en cas d'erreur signalée par le collecteur
+// via la messagerie). Après 24h, le PDG peut le CONFIRMER : l'opération devient
+// alors définitive et non annulable, et la commission est comptabilisée.
+// ==========================================================
+
+function estVerrouillable(payment) {
+  if (!payment.date || !payment.date.toDate) return false;
+  const dateMs = payment.date.toDate().getTime();
+  return (Date.now() - dateMs) >= 24 * 60 * 60 * 1000;
+}
+
+function heuresRestantesAvantVerrouillage(payment) {
+  if (!payment.date || !payment.date.toDate) return null;
+  const dateMs = payment.date.toDate().getTime();
+  const restant = 24 * 60 * 60 * 1000 - (Date.now() - dateMs);
+  return restant > 0 ? Math.ceil(restant / (60 * 60 * 1000)) : 0;
+}
+
 function renderConfirmations() {
   const container = document.getElementById("liste-confirmations");
   if (!container) return;
 
-  const enAttenteAncien = state.payments.filter((p) => p.statut === "collecte");
-  const confirmes = state.payments
+  const enAttente = state.payments.filter((p) => p.statut === "collecte");
+  const enVerification = enAttente.filter((p) => !estVerrouillable(p));
+  const pretsAConfirmer = enAttente.filter((p) => estVerrouillable(p));
+  const verrouilles = state.payments
     .filter((p) => p.statut === "confirme")
     .sort((a, b) => {
       const da = a.date && a.date.toDate ? a.date.toDate() : new Date(0);
@@ -1382,9 +1400,39 @@ function renderConfirmations() {
 
   let html = "";
 
-  if (enAttenteAncien.length > 0) {
-    html += `<h3 style="font-size:14px; margin-bottom:8px;">Anciens versements non confirmés</h3>`;
-    html += enAttenteAncien.map((p) => {
+  html += `<h3 style="font-size:14px; margin-bottom:8px;">En période de vérification (moins de 24h)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Déjà comptés dans le solde du membre. Vous pouvez encore annuler en cas d'erreur signalée par le collecteur.</p>`;
+  if (enVerification.length === 0) {
+    html += `<p class="empty-state">Aucun versement en période de vérification.</p>`;
+  } else {
+    html += enVerification.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      const h = heuresRestantesAvantVerrouillage(p);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+              <p class="entity-sub">Verrouillable dans ${h !== null ? h + "h" : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Prêts à verrouiller (24h écoulées)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Confirmez pour verrouiller définitivement (l'opération ne sera plus annulable et la commission sera comptabilisée).</p>`;
+  if (pretsAConfirmer.length === 0) {
+    html += `<p class="empty-state">Aucun versement prêt à verrouiller.</p>`;
+  } else {
+    html += pretsAConfirmer.map((p) => {
       const membre = state.users.find((u) => u.uid === p.membre_id);
       const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
       return `
@@ -1397,19 +1445,20 @@ function renderConfirmations() {
             <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
           </div>
           <div class="entity-actions">
-            <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Confirmer</button>
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+            <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Verrouiller (Confirmer)</button>
           </div>
         </div>
       `;
     }).join("");
   }
 
-  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique des encaissements</h3>
-    <p class="subtitle-sm" style="margin-bottom:10px;">Confirmés automatiquement par le collecteur. Vous pouvez annuler une opération en cas d'erreur.</p>`;
-  if (confirmes.length === 0) {
-    html += `<p class="empty-state">Aucun encaissement pour le moment.</p>`;
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique verrouillé</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Ces opérations sont définitives et ne peuvent plus être annulées.</p>`;
+  if (verrouilles.length === 0) {
+    html += `<p class="empty-state">Aucun encaissement verrouillé pour le moment.</p>`;
   } else {
-    html += confirmes.map((p) => {
+    html += verrouilles.map((p) => {
       const membre = state.users.find((u) => u.uid === p.membre_id);
       const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
       return `
@@ -1420,9 +1469,6 @@ function renderConfirmations() {
               <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"} · ${formatDate(p.date)}</p>
             </div>
             <span class="badge badge-actif">${formatGNF(p.montant)}</span>
-          </div>
-          <div class="entity-actions">
-            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
           </div>
         </div>
       `;
@@ -1441,7 +1487,7 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
         statut: "confirme",
         date_confirmation: serverTimestamp(),
       });
-      notifier("Versement confirmé.", "succes");
+      notifier("Versement verrouillé (confirmé).", "succes");
     } catch (err) {
       console.error(err);
       notifier("Erreur : " + err.message, "erreur");
@@ -1456,7 +1502,7 @@ document.getElementById("liste-confirmations")?.addEventListener("click", async 
     if (!payment) return;
     ouvrirModalConfirmation(
       "Annuler cet encaissement ?",
-      `Montant : ${formatGNF(payment.montant)} · Jour ${payment.jour_numero}. Cette opération ne sera plus comptée dans les soldes.`,
+      `Montant : ${formatGNF(payment.montant)} · Jour ${payment.jour_numero}. Le solde du membre sera immédiatement rétrogradé.`,
       async () => {
         try {
           await annulerEncaissement(payment);
