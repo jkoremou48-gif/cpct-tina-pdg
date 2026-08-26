@@ -16,6 +16,7 @@
   .collapsible-title::after { content: " ▾"; font-size: 12px; }
   .collapsible-title.ouvert::after { content: " ▴"; }
   .zone-titre { font-family: 'Fraunces', serif; font-size: 16px; font-weight: 600; color: #14213D; margin: 18px 0 8px 0; border-bottom: 2px solid #D9A441; padding-bottom: 4px; }
+  .type-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; background:#e9ecef; color:#333; margin-left:6px; }
 </style>
 </head>
 <body>
@@ -129,6 +130,7 @@
   <button class="tab-btn" data-tab="retraits">Retraits</button>
   <button class="tab-btn" data-tab="communication">Communication</button>
   <button class="tab-btn" data-tab="rapport">Rapport</button>
+  <button class="tab-btn" data-tab="parametres">Paramètres</button>
 </nav>
 
     <div id="tab-apercu" class="tab-panel">
@@ -138,11 +140,11 @@
           <p class="stat-value" id="stat-total-epargnes">—</p>
         </div>
         <div class="stat-card stat-card-commission">
-          <p class="stat-label">Commission PDG disponible (70%)</p>
+          <p class="stat-label">Commission PDG disponible</p>
           <p class="stat-value" id="stat-total-commissions">—</p>
         </div>
         <div class="stat-card">
-          <p class="stat-label">Commission globale (100%, tous collecteurs)</p>
+          <p class="stat-label">Commission globale (tous collecteurs)</p>
           <p class="stat-value" id="stat-commission-globale">—</p>
         </div>
         <div class="stat-card">
@@ -154,6 +156,9 @@
           <p class="stat-value" id="stat-nb-membres">—</p>
         </div>
       </div>
+
+      <div class="zone-titre">Répartition par type de contrat</div>
+      <div id="cards-par-type" class="cards-grid"></div>
 
       <div class="actions-row">
         <button id="btn-decaisser" class="btn btn-primary">Décaisser des commissions</button>
@@ -247,10 +252,41 @@
         <h2>Rapport</h2>
       </div>
       <p class="subtitle-sm">Consultez la situation de tous vos collecteurs, classés par zone, pour une période donnée.</p>
-      <button id="btn-generer-rapport" class="btn btn-primary" style="width:auto; padding:12px 24px;">RAPPORT</button>
+      <button id="btn-generer-rapport" class="btn btn-primary" style="width:auto; padding:12px 24px;">RAPPORT PAR ZONE</button>
       <button id="btn-rapport-national-pdf" class="btn btn-secondary btn-sm" style="margin-top:10px;">Rapport national (PDF imprimable)</button>
       <div id="rapport-entete" style="margin-top:16px;"></div>
       <div id="rapport-resultats"></div>
+
+      <div class="zone-titre" style="margin-top:24px;">Rapport par type de contrat</div>
+      <p class="subtitle-sm">Épargne, commissions et prêts en cours, ventilés par type de contrat (journalier / hebdomadaire / mensuel).</p>
+      <div id="rapport-par-type-resultats" style="margin-top:12px;"></div>
+    </div>
+
+    <div id="tab-parametres" class="tab-panel hidden">
+      <div class="list-header">
+        <h2>Paramètres</h2>
+      </div>
+      <div class="card">
+        <h2 style="font-size:15px; margin-bottom:6px;">Contrats hebdomadaire et mensuel — répartition des %</h2>
+        <p class="subtitle-sm">Ces pourcentages s'appliquent à la fois au frais d'inscription et à l'intérêt de prêt perçus sur les contrats hebdomadaires et mensuels (le contrat journalier reste à 70%/30% fixe, sans redistribution). La somme des 3 doit faire 100%.</p>
+        <form id="form-parametres-interets">
+          <div class="field-row">
+            <label>Ma part, PDG (%)</label>
+            <input type="number" name="pdg" min="0" max="100" step="0.1" required />
+          </div>
+          <div class="field-row">
+            <label>Part du collecteur (%)</label>
+            <input type="number" name="collecteur" min="0" max="100" step="0.1" required />
+          </div>
+          <div class="field-row">
+            <label>Part à redistribuer aux membres à contrat annuel du même collecteur (%)</label>
+            <input type="number" name="redistribution" min="0" max="100" step="0.1" required />
+          </div>
+          <p class="subtitle-sm" style="margin-top:4px;">Note : la part "redistribution" ne s'applique qu'à l'intérêt de prêt, jamais au frais d'inscription (qui se répartit uniquement entre PDG et collecteur, au prorata des 2 premiers pourcentages).</p>
+          <p id="parametres-erreur" style="color:#c0392b; font-size:13px; margin-top:6px;"></p>
+          <button type="submit" class="btn btn-primary" style="margin-top:10px;">Enregistrer</button>
+        </form>
+      </div>
     </div>
   </section>
 
