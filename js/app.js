@@ -8,6 +8,7 @@ import {
 
 import {
   genererCodeParrain, formatGNF, formatDate, formatDateHeure, nomMois, calculerSoldes, notifier, calculerStatutContrat,
+  TYPES_CONTRAT, infoTypeContrat, calculerMontantDuPretGeneralise,
 } from "./utils.js";
 
 const AVATAR_DEFAUT = "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23ddd'/></svg>";
@@ -31,6 +32,11 @@ const state = {
   retraitsCommission: [],
   diffusions: [],
   messagesPrives: [],
+  // --- NOUVEAU (25 août 2026) : types de contrats ---
+  fraisInscriptions: [],
+  depenses: [],
+  redistributions: [],
+  parametresInterets: { pdg: 0.70, collecteur: 0.30, redistribution: 0 },
   unsubscribers: [],
   vueZone: {
     niveau: "prefectures",
@@ -298,7 +304,38 @@ function lancerDashboard() {
     state.messagesPrives = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  state.unsubscribers.push(unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits, unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets, unsubRetraitsCommission, unsubDiffusions, unsubMessagesPrives);
+  // --- NOUVEAU (25 août 2026) : types de contrats ---
+  const unsubFraisInscription = onSnapshot(collection(db, "frais_inscription"), (snap) => {
+    state.fraisInscriptions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubDepenses = onSnapshot(collection(db, "depenses"), (snap) => {
+    state.depenses = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubRedistributions = onSnapshot(collection(db, "redistributions_interets"), (snap) => {
+    state.redistributions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    render();
+  });
+  const unsubParametres = onSnapshot(doc(db, "parametres", "interets_types_annuels"), (snap) => {
+    if (snap.exists()) {
+      const d = snap.data();
+      state.parametresInterets = {
+        pdg: Number(d.pdg ?? 0.70),
+        collecteur: Number(d.collecteur ?? 0.30),
+        redistribution: Number(d.redistribution ?? 0),
+      };
+    }
+    preremplirFormulaireParametres();
+    render();
+  });
+
+  state.unsubscribers.push(
+    unsubUsers, unsubContracts, unsubPayments, unsubDecaissements, unsubAttente, unsubRetraits,
+    unsubRetraitsConfirmes, unsubPrets, unsubRemboursements, unsubVersementsCollecteur, unsubInterets,
+    unsubRetraitsCommission, unsubDiffusions, unsubMessagesPrives,
+    unsubFraisInscription, unsubDepenses, unsubRedistributions, unsubParametres
+  );
 }
 
 function render() {
@@ -309,61 +346,73 @@ function render() {
   renderMembresEnAttente();
   renderRetraits();
   renderCommunication();
+  renderRapportParType();
 }
 
-function renderApercu() {
-  const collecteursTous = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+// ==========================================================
+// --- NOUVEAU (25 août 2026) : paramètres de répartition ---
+// ==========================================================
 
-  let commissionPdgDisponible = 0;
-  let commissionGlobaleTotale = 0;
-  let soldeGlobalEpargnes = 0;
+function preremplirFormulaireParametres() {
+  const form = document.getElementById("form-parametres-interets");
+  if (!form) return;
+  form.pdg.value = (state.parametresInterets.pdg * 100).toFixed(1);
+  form.collecteur.value = (state.parametresInterets.collecteur * 100).toFixed(1);
+  form.redistribution.value = (state.parametresInterets.redistribution * 100).toFixed(1);
+}
 
-  collecteursTous.forEach((c) => {
-    const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
-    const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
-    commissionPdgDisponible += commissionPdg;
-    commissionGlobaleTotale += commissionPdg + commissionCollecteur;
-    soldeGlobalEpargnes += calculerSoldeEpargneNetCollecteur(c.uid);
-  });
+document.getElementById("form-parametres-interets").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const pdgPct = Number(fd.get("pdg"));
+  const collecteurPct = Number(fd.get("collecteur"));
+  const redistributionPct = Number(fd.get("redistribution"));
+  const erreurZone = document.getElementById("parametres-erreur");
+  erreurZone.textContent = "";
 
-  document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
-  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionPdgDisponible);
-  document.getElementById("stat-commission-globale").textContent = formatGNF(commissionGlobaleTotale);
-  document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
-  document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
-
-  const { parMois } = calculerSoldes(state.payments, state.contracts);
-  const cles = Object.keys(parMois).sort().reverse();
-  const container = document.getElementById("monthly-breakdown");
-  if (cles.length === 0) {
-    container.innerHTML = `<p class="empty-state">Aucune donnée pour le moment.</p>`;
-  } else {
-    container.innerHTML = cles.slice(0, 12).map((cle) => `
-      <div class="monthly-row">
-        <span class="monthly-mois">${nomMois(cle)}</span>
-        <span class="monthly-detail">
-          Épargnes : <b class="epargne">${formatGNF(parMois[cle].epargnes)}</b><br/>
-          Commissions : <b class="commission">${formatGNF(parMois[cle].commissions)}</b>
-        </span>
-      </div>
-    `).join("");
+  const somme = pdgPct + collecteurPct + redistributionPct;
+  if (Math.abs(somme - 100) > 0.05) {
+    erreurZone.textContent = `La somme des 3 pourcentages doit faire 100% (actuellement ${somme.toFixed(1)}%).`;
+    return;
   }
-}
 
-document.getElementById("titre-historique-mensuel").addEventListener("click", () => {
-  const titre = document.getElementById("titre-historique-mensuel");
-  const zone = document.getElementById("monthly-breakdown");
-  zone.classList.toggle("hidden");
-  titre.classList.toggle("ouvert");
+  try {
+    await setDoc(doc(db, "parametres", "interets_types_annuels"), {
+      pdg: pdgPct / 100,
+      collecteur: collecteurPct / 100,
+      redistribution: redistributionPct / 100,
+      date_maj: serverTimestamp(),
+      maj_par: state.currentUser.uid,
+    });
+    notifier("Paramètres enregistrés.", "succes");
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur : " + err.message, "erreur");
+  }
 });
 
-// --- Correctif (23 août 2026) : l'épargne du membre compte tout versement
-// NON ANNULÉ, immédiatement, sans attendre le verrouillage/confirmation à 24h.
+// ==========================================================
+// --- NOUVEAU (25 août 2026) : calculs généralisés par type de contrat ---
+// Mêmes règles que dans l'app Collecteur : journalier exclut jour_numero===1
+// de l'épargne nette ; hebdo/mensuel comptent tous les versements, moins les
+// dépenses non compensées, plus les redistributions reçues.
+// ==========================================================
+
 function calculerEpargneNetteContrat(contrat) {
-  const versements = state.payments.filter((p) => p.contract_id === contrat.id);
-  return versements
-    .filter((p) => p.statut !== "annule" && p.jour_numero > 1)
-    .reduce((s, p) => s + Number(p.montant || 0), 0);
+  const typeContrat = contrat.type_contrat || "journalier";
+  const versements = state.payments.filter((p) => p.contract_id === contrat.id && p.statut !== "annule");
+
+  if (typeContrat === "journalier") {
+    return versements.filter((p) => p.jour_numero !== 1).reduce((s, p) => s + Number(p.montant || 0), 0);
+  }
+  let epargne = versements.reduce((s, p) => s + Number(p.montant || 0), 0);
+  const depensesNonCompensees = state.depenses
+    .filter((d) => d.contract_id === contrat.id && !d.compensee)
+    .reduce((s, d) => s + Number(d.montant || 0), 0);
+  const redistributionsRecues = state.redistributions
+    .filter((r) => r.contract_id === contrat.id)
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  return epargne - depensesNonCompensees + redistributionsRecues;
 }
 
 function calculerSoldeDisponible(contrat) {
@@ -378,6 +427,8 @@ function avatarImg(u, taille) {
   return `<img class="${classe}" src="${u && u.photoURL ? u.photoURL : AVATAR_DEFAUT}" alt="${u ? u.nom : ''}" />`;
 }
 
+// Commission PDG : 70% du jour 1 (journalier confirmé) + part PDG des frais
+// d'inscription (hebdo/mensuel) + part PDG des intérêts de prêt (tous types).
 function calculerCommissionPdgParCollecteur(collecteurId) {
   const jour1Confirmes = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
@@ -385,11 +436,15 @@ function calculerCommissionPdgParCollecteur(collecteurId) {
   const totalJour1Confirme = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
   const commissionPdgInscriptions = totalJour1Confirme * 0.70;
 
+  const fraisInscriptionPdg = state.fraisInscriptions
+    .filter((f) => f.collecteur_id === collecteurId)
+    .reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+
   const interetsPdgCollecteur = state.interetsPartages
     .filter((i) => i.collecteur_id === collecteurId)
     .reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
 
-  const commissionPdgTotale = commissionPdgInscriptions + interetsPdgCollecteur;
+  const commissionPdgTotale = commissionPdgInscriptions + fraisInscriptionPdg + interetsPdgCollecteur;
 
   const retraitsPdgConfirmes = state.retraitsCommission
     .filter((r) => r.beneficiaire_role === "pdg" && r.collecteur_id === collecteurId && r.statut === "confirme")
@@ -405,11 +460,15 @@ function calculerCommissionCollecteurPropre(collecteurId) {
   const totalJour1Confirme = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
   const commissionInscriptions = totalJour1Confirme * 0.30;
 
+  const fraisInscriptionCollecteur = state.fraisInscriptions
+    .filter((f) => f.collecteur_id === collecteurId)
+    .reduce((s, f) => s + Number(f.montant_collecteur || 0), 0);
+
   const interetsCollecteur = state.interetsPartages
     .filter((i) => i.collecteur_id === collecteurId)
     .reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
 
-  return commissionInscriptions + interetsCollecteur;
+  return commissionInscriptions + fraisInscriptionCollecteur + interetsCollecteur;
 }
 
 function calculerSoldeEpargneNetCollecteur(collecteurId) {
@@ -555,8 +614,8 @@ function renderCollecteurs() {
             <span class="badge ${badgeClasse}">${c.statut}</span>
           </div>
           <div class="detail-line"><span>Commission globale (100%)</span><span style="font-weight:bold;">${formatGNF(commissionGlobale)}</span></div>
-          <div class="detail-line"><span>Commission PDG (70%)</span><span>${formatGNF(commissionPdg)}</span></div>
-          <div class="detail-line"><span>Commission collecteur (30%)</span><span>${formatGNF(commissionCollecteur)}</span></div>
+          <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(commissionPdg)}</span></div>
+          <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(commissionCollecteur)}</span></div>
           <div class="detail-line"><span>Solde global d'épargne net</span><span>${formatGNF(soldeEpargneNet)}</span></div>
           <div class="detail-line"><span>Contrats actifs</span><span>${nbActifs}</span></div>
           <div class="detail-line"><span>Contrats inactifs</span><span style="${nbInactifs > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${nbInactifs}</span></div>
@@ -846,13 +905,7 @@ document.getElementById("btn-quitter-substitution").addEventListener("click", ()
 });
 
 function calculerMontantDuPret(pret) {
-  const dateDebut = pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : new Date();
-  const nbSemaines = Math.floor((new Date() - dateDebut) / (1000 * 60 * 60 * 24 * 7)) + 1;
-  const montantDuBrut = pret.montant_initial * (1 + pret.taux_hebdo * nbSemaines);
-  const dejaRembourse = (state.remboursements || [])
-    .filter((r) => r.pret_id === pret.id)
-    .reduce((s, r) => s + Number(r.montant || 0), 0);
-  return Math.max(0, montantDuBrut - dejaRembourse);
+  return calculerMontantDuPretGeneralise(pret, state.remboursements);
 }
 
 function trouverContratsNonSoldes(membreId, contratExclureId) {
@@ -903,8 +956,8 @@ function renderMembres() {
   container.innerHTML = membres.map((m) => {
     const contrat = state.contracts.find((c) => c.membre_id === m.uid && c.statut === "actif")
       || state.contracts.filter((c) => c.membre_id === m.uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""))[0];
-    const versements = state.payments.filter((p) => contrat && p.contract_id === contrat.id);
-    const totalVerse = versements.filter((p) => p.statut !== "annule" && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+    const infoType = contrat ? infoTypeContrat(contrat.type_contrat || "journalier") : null;
+    const totalVerse = contrat ? Math.max(0, calculerEpargneNetteContrat(contrat)) : 0;
     let statutContrat = contrat ? contrat.statut : "aucun contrat";
     let estInactif = false;
     if (contrat && calculerStatutContrat(contrat, versementsConfirmesTous) === "inactif") {
@@ -922,7 +975,7 @@ function renderMembres() {
             <div style="display:flex; align-items:center;">
               ${avatarImg(m, "mini")}
               <div>
-                <p class="entity-nom">${m.nom}</p>
+                <p class="entity-nom">${m.nom} ${infoType ? `<span class="type-badge">${infoType.label}</span>` : ""}</p>
                 <p class="entity-sub" style="${estInactif ? "color:#c0392b; font-weight:bold;" : ""}">${m.telephone} · ${statutContrat}</p>
                 ${pret ? `<p class="entity-sub" style="color:#c0392b;">Prêt en cours : ${formatGNF(calculerMontantDuPret(pret))}</p>` : ""}
                 ${totalNonSolde > 0 ? `<p class="entity-sub" style="color:#c0392b; font-weight:bold;">Contrat non soldé : ${formatGNF(totalNonSolde)}</p>` : ""}
@@ -961,14 +1014,49 @@ document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () =
       <div class="field-row"><label>Téléphone (identifiant de connexion)</label><input type="tel" name="telephone" required /></div>
       <div class="field-row"><label>E-mail</label><input type="email" name="email" required /></div>
       <div class="field-row"><label>Résidence</label><input type="text" name="residence" required /></div>
-      <div class="field-row"><label>Montant du versement quotidien (GNF)</label><input type="number" name="montantJour" min="1" required /></div>
-      <div class="field-row"><label>Commission encaissée aujourd'hui (jour 1, GNF)</label><input type="number" name="commission" min="1" required /></div>
+      <div class="field-row">
+        <label>Type de contrat</label>
+        <select name="typeContrat" id="select-type-contrat-pdg" required>
+          <option value="journalier">${TYPES_CONTRAT.journalier.label}</option>
+          <option value="hebdomadaire">${TYPES_CONTRAT.hebdomadaire.label}</option>
+          <option value="mensuel">${TYPES_CONTRAT.mensuel.label}</option>
+        </select>
+      </div>
+      <div class="field-row">
+        <label id="label-montant-periode-pdg">Montant du versement quotidien (GNF)</label>
+        <input type="number" name="montantPeriode" min="1" required />
+      </div>
+      <div class="field-row" id="champ-commission-pdg">
+        <label>Commission encaissée aujourd'hui (jour 1, GNF)</label>
+        <input type="number" name="commission" min="1" />
+      </div>
+      <div class="field-row hidden" id="champ-frais-inscription-pdg">
+        <label>Frais d'inscription (GNF)</label>
+        <input type="number" name="fraisInscription" min="0" />
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
         <button type="submit" class="btn btn-primary" style="flex:1;">Créer le compte</button>
       </div>
     </form>
   `);
+  document.getElementById("select-type-contrat-pdg").addEventListener("change", (e) => {
+    const infoType = infoTypeContrat(e.target.value);
+    document.getElementById("label-montant-periode-pdg").textContent = `Montant du ${infoType.labelVersement} (GNF)`;
+    const champCommission = document.getElementById("champ-commission-pdg");
+    const champFrais = document.getElementById("champ-frais-inscription-pdg");
+    if (e.target.value === "journalier") {
+      champCommission.classList.remove("hidden");
+      champFrais.classList.add("hidden");
+      champCommission.querySelector("input").required = true;
+      champFrais.querySelector("input").required = false;
+    } else {
+      champCommission.classList.add("hidden");
+      champFrais.classList.remove("hidden");
+      champCommission.querySelector("input").required = false;
+      champFrais.querySelector("input").required = false;
+    }
+  });
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
   document.getElementById("form-nouveau-membre-pdg").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -978,9 +1066,12 @@ document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () =
     const telephone = fd.get("telephone").trim();
     const email = fd.get("email").trim();
     const residence = fd.get("residence").trim();
-    const montantJour = Number(fd.get("montantJour"));
-    const commission = Number(fd.get("commission"));
+    const typeContrat = fd.get("typeContrat");
+    const montantPeriode = Number(fd.get("montantPeriode"));
+    const commission = Number(fd.get("commission") || 0);
+    const fraisInscription = Number(fd.get("fraisInscription") || 0);
     const password = telephone.replace(/\D/g, "").slice(-6);
+    const infoType = infoTypeContrat(typeContrat);
 
     try {
       const emailTechnique = telephoneVersEmailTechnique(telephone);
@@ -994,25 +1085,44 @@ document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () =
         date_creation: serverTimestamp(),
       });
 
-      const contratRef = await addDoc(collection(db, "contracts"), {
+      const contratData = {
         membre_id: uid,
         membre_nom: nom,
         collecteur_id: collecteurId,
         statut: "actif",
-        commission,
-        montant_mise: montantJour,
+        type_contrat: typeContrat,
+        duree_totale: infoType.duree,
+        montant_mise: montantPeriode,
         date_debut: new Date().toISOString(),
-      });
+      };
+      if (typeContrat === "journalier") {
+        contratData.commission = commission;
+      } else {
+        contratData.frais_inscription = fraisInscription;
+      }
+      const contratRef = await addDoc(collection(db, "contracts"), contratData);
 
-      await addDoc(collection(db, "payments"), {
-        contract_id: contratRef.id,
-        collecteur_id: collecteurId,
-        membre_id: uid,
-        montant: commission,
-        jour_numero: 1,
-        statut: "collecte",
-        date: serverTimestamp(),
-      });
+      if (typeContrat === "journalier") {
+        await addDoc(collection(db, "payments"), {
+          contract_id: contratRef.id,
+          collecteur_id: collecteurId,
+          membre_id: uid,
+          montant: commission,
+          jour_numero: 1,
+          statut: "collecte",
+          date: serverTimestamp(),
+        });
+      } else if (fraisInscription > 0) {
+        await addDoc(collection(db, "frais_inscription"), {
+          contract_id: contratRef.id,
+          membre_id: uid,
+          collecteur_id: collecteurId,
+          montant_total: fraisInscription,
+          montant_pdg: fraisInscription * state.parametresInterets.pdg,
+          montant_collecteur: fraisInscription * state.parametresInterets.collecteur,
+          date: serverTimestamp(),
+        });
+      }
 
       fermerModal();
       ouvrirModal(`
@@ -1113,8 +1223,9 @@ async function afficherDetailMembre(uid) {
   const membre = state.users.find((u) => u.uid === uid);
   const contrats = state.contracts.filter((c) => c.membre_id === uid).sort((a, b) => (b.date_debut || "").localeCompare(a.date_debut || ""));
   const contrat = contrats[0];
+  const infoType = contrat ? infoTypeContrat(contrat.type_contrat || "journalier") : null;
   const versements = contrat ? state.payments.filter((p) => p.contract_id === contrat.id).sort((a, b) => a.jour_numero - b.jour_numero) : [];
-  const totalVerse = versements.filter((p) => p.statut !== 'annule' && p.jour_numero > 1).reduce((s, p) => s + p.montant, 0);
+  const totalVerse = contrat ? Math.max(0, calculerEpargneNetteContrat(contrat)) : 0;
 
   const contratsNonSoldes = trouverContratsNonSoldes(uid, contrat ? contrat.id : null);
   const totalNonSolde = contratsNonSoldes.reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
@@ -1123,14 +1234,16 @@ async function afficherDetailMembre(uid) {
   const datePret = pret && pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : null;
   const soldeDisponible = contrat ? calculerSoldeDisponible(contrat) : 0;
 
+  const depensesContrat = contrat ? state.depenses.filter((d) => d.contract_id === contrat.id)
+    .sort((a, b) => (b.date_depense || "").localeCompare(a.date_depense || "")) : [];
+
   const html = `
-    <h2 style="display:flex; align-items:center; gap:10px;">${avatarImg(membre, "mini")}${membre.nom}</h2>
+    <h2 style="display:flex; align-items:center; gap:10px;">${avatarImg(membre, "mini")}${membre.nom} ${infoType ? `<span class="type-badge">${infoType.label}</span>` : ""}</h2>
     <p class="subtitle-sm">Identifiant de connexion (téléphone) : <b>${membre.telephone}</b></p>
     ${membre.residence ? `<p class="subtitle-sm">Résidence : ${membre.residence}</p>` : ""}
     <div class="detail-line"><span>Statut du contrat</span><span>${contrat ? contrat.statut : "—"}</span></div>
     <div class="detail-line"><span>Début du contrat</span><span>${contrat ? formatDate(contrat.date_debut) : "—"}</span></div>
-    <div class="detail-line"><span>Cotisation journalière</span><span>${contrat ? formatGNF(contrat.montant_mise) : "—"}</span></div>
-    <div class="detail-line"><span>Commission (jour 1)</span><span>${contrat ? formatGNF(contrat.commission) : "—"}</span></div>
+    <div class="detail-line"><span>Montant du ${infoType ? infoType.labelVersement : "versement"}</span><span>${contrat ? formatGNF(contrat.montant_mise) : "—"}</span></div>
     <div class="detail-line"><span>Total épargné (épargne nette)</span><span>${formatGNF(totalVerse)}</span></div>
     ${pret ? `<div class="detail-line"><span style="color:#c0392b;">Solde disponible (après prêt)</span><span style="color:#c0392b;"><b>${formatGNF(soldeDisponible)}</b></span></div>` : ''}
     ${totalNonSolde > 0 ? `<div class="detail-line"><span style="color:#c0392b;">Contrat(s) non soldé(s)</span><span style="color:#c0392b;">${formatGNF(totalNonSolde)}</span></div>` : ""}
@@ -1140,22 +1253,30 @@ async function afficherDetailMembre(uid) {
       <div class="detail-line"><span>Montant dû actuellement</span><span><b>${formatGNF(calculerMontantDuPret(pret))}</b></span></div>
       <div class="detail-line"><span>Date du prêt</span><span>${datePret ? formatDate(datePret) : "—"}</span></div>
     ` : ""}
-    ${contrat && contrat.statut === "actif" ? `
+    ${contrat && contrat.statut === "actif" && (contrat.type_contrat || "journalier") === "journalier" ? `
       <div class="modal-actions" style="margin-top:14px;">
         <button type="button" class="btn btn-secondary btn-sm" id="btn-modifier-cotisation" style="flex:1;">Modifier la cotisation journalière</button>
+      </div>
+    ` : ""}
+    ${depensesContrat.length > 0 ? `
+      <h2 style="margin-top:18px; font-size:15px;">Dépenses (justificatifs)</h2>
+      <div style="max-height:180px; overflow-y:auto; margin-top:8px;">
+        ${depensesContrat.map((d) => `
+          <div class="detail-line"><span>${d.date_depense || ""} — ${d.libelle} ${d.compensee ? '<span style="color:#198754;">(compensée)</span>' : '<span style="color:#e67e22;">(non compensée)</span>'}</span><span>${formatGNF(d.montant)}</span></div>
+        `).join("")}
       </div>
     ` : ""}
     <h2 style="margin-top:18px; font-size:15px;">Historique des versements</h2>
     <div style="max-height:220px; overflow-y:auto; margin-top:8px;">
       ${versements.length === 0 ? '<p class="empty-state">Aucun versement enregistré.</p>' : versements.map((v) => `
-        <div class="detail-line"><span>Jour ${v.jour_numero} — ${formatDate(v.date)}</span><span>${formatGNF(v.montant)}</span></div>
+        <div class="detail-line"><span>Période ${v.jour_numero} — ${formatDate(v.date)}</span><span>${formatGNF(v.montant)}</span></div>
       `).join("")}
     </div>
     <div class="modal-actions"><button class="btn btn-ghost-sm" id="btn-fermer-modal-membre" style="flex:1;">Fermer</button></div>
   `;
   ouvrirModal(html);
   document.getElementById("btn-fermer-modal-membre").addEventListener("click", fermerModal);
-  if (contrat && contrat.statut === "actif") {
+  if (contrat && contrat.statut === "actif" && (contrat.type_contrat || "journalier") === "journalier") {
     document.getElementById("btn-modifier-cotisation").addEventListener("click", () => ouvrirModificationCotisation(contrat));
   }
 }
@@ -1298,10 +1419,11 @@ document.getElementById("btn-decaisser").addEventListener("click", () => {
   const { totalCommissions } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
   const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const totalFraisInscriptionPdg = state.fraisInscriptions.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
   const totalRetraitsCommissionPdg = state.retraitsCommission
     .filter((r) => r.beneficiaire_role === "pdg" && r.statut === "confirme")
     .reduce((s, r) => s + Number(r.montant || 0), 0);
-  const disponible = totalCommissions + totalInteretsPdg - totalDecaisse - totalRetraitsCommissionPdg;
+  const disponible = totalCommissions + totalInteretsPdg + totalFraisInscriptionPdg - totalDecaisse - totalRetraitsCommissionPdg;
   ouvrirModal(`
     <h2>Décaisser des commissions</h2>
     <p class="subtitle-sm">Montant disponible : <b>${formatGNF(disponible)}</b></p>
@@ -1362,11 +1484,6 @@ async function genererEtAfficherCode(type) {
 
 // ==========================================================
 // --- Onglet "Confirmations" : verrouillage à 24h (23 août 2026) ---
-// Un versement compte IMMÉDIATEMENT dans le solde du membre dès sa saisie
-// par le collecteur (statut "collecte"). Le PDG peut l'ANNULER à tout moment
-// tant qu'il n'est pas verrouillé (en cas d'erreur signalée par le collecteur
-// via la messagerie). Après 24h, le PDG peut le CONFIRMER : l'opération devient
-// alors définitive et non annulable, et la commission est comptabilisée.
 // ==========================================================
 
 function estVerrouillable(payment) {
@@ -1530,7 +1647,7 @@ async function annulerEncaissement(payment) {
 
 function infoTypeRetrait(type) {
   const infos = {
-    'pret': { libelle: 'Prêt (2%/semaine)', classe: 'badge-suspendu', actionLabel: 'Valider comme prêt' },
+    'pret': { libelle: 'Prêt', classe: 'badge-suspendu', actionLabel: 'Valider comme prêt' },
     'solde_contrat_termine': { libelle: 'Solde de contrat terminé', classe: 'badge-actif', actionLabel: 'Confirmer' },
     'retrait_final': { libelle: 'Retrait final (clôture)', classe: 'badge-licencie', actionLabel: 'Confirmer' },
   };
@@ -1868,6 +1985,98 @@ async function ouvrirFilMessagerie(participantId) {
   }
 }
 
+// ==========================================================
+// --- NOUVEAU (25 août 2026) : Aperçu et Rapport par type de contrat ---
+// ==========================================================
+
+function calculerChiffresParType(typeContratCle) {
+  const contrats = state.contracts.filter((c) => (c.type_contrat || "journalier") === typeContratCle);
+  const contratIds = new Set(contrats.map((c) => c.id));
+
+  const epargneNette = contrats
+    .filter((c) => c.statut === "actif")
+    .reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
+
+  let commissionPdg = 0;
+  let commissionCollecteur = 0;
+
+  if (typeContratCle === "journalier") {
+    const jour1Confirmes = state.payments.filter(
+      (p) => p.statut === "confirme" && p.jour_numero === 1 && contratIds.has(p.contract_id)
+    );
+    const totalJour1 = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
+    commissionPdg = totalJour1 * 0.70;
+    commissionCollecteur = totalJour1 * 0.30;
+    const interets = state.interetsPartages.filter((i) => {
+      const pret = state.prets.find((p) => p.id === i.pret_id);
+      return pret && (pret.type_contrat || "journalier") === "journalier";
+    });
+    commissionPdg += interets.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+    commissionCollecteur += interets.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+  } else {
+    const frais = state.fraisInscriptions.filter((f) => contratIds.has(f.contract_id));
+    commissionPdg += frais.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+    commissionCollecteur += frais.reduce((s, f) => s + Number(f.montant_collecteur || 0), 0);
+    const interets = state.interetsPartages.filter((i) => {
+      const pret = state.prets.find((p) => p.id === i.pret_id);
+      return pret && (pret.type_contrat || "journalier") === typeContratCle;
+    });
+    commissionPdg += interets.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+    commissionCollecteur += interets.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+  }
+
+  const pretsEnCours = state.prets.filter((p) => p.statut === "actif" && (p.type_contrat || "journalier") === typeContratCle);
+  const totalPretsEnCours = pretsEnCours.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+
+  return {
+    nbContrats: contrats.filter((c) => c.statut === "actif").length,
+    epargneNette,
+    commissionPdg,
+    commissionCollecteur,
+    totalPretsEnCours,
+  };
+}
+
+function renderCardsParType() {
+  const container = document.getElementById("cards-par-type");
+  if (!container) return;
+  const types = ["journalier", "hebdomadaire", "mensuel"];
+  container.innerHTML = types.map((t) => {
+    const infoType = infoTypeContrat(t);
+    const chiffres = calculerChiffresParType(t);
+    return `
+      <div class="stat-card">
+        <p class="stat-label">${infoType.label} — ${chiffres.nbContrats} contrat(s) actif(s)</p>
+        <p class="stat-value" style="font-size:18px;">${formatGNF(chiffres.epargneNette)}</p>
+        <p class="subtitle-sm">Commission PDG : ${formatGNF(chiffres.commissionPdg)} · Collecteur : ${formatGNF(chiffres.commissionCollecteur)}</p>
+        <p class="subtitle-sm">Prêts en cours : ${formatGNF(chiffres.totalPretsEnCours)}</p>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderRapportParType() {
+  const container = document.getElementById("rapport-par-type-resultats");
+  if (!container) return;
+  const types = ["journalier", "hebdomadaire", "mensuel"];
+  container.innerHTML = types.map((t) => {
+    const infoType = infoTypeContrat(t);
+    const chiffres = calculerChiffresParType(t);
+    return `
+      <div class="entity-card">
+        <div class="entity-card-top">
+          <p class="entity-nom">${infoType.label}</p>
+          <span class="badge badge-actif">${chiffres.nbContrats} contrat(s)</span>
+        </div>
+        <div class="detail-line"><span>Épargne nette (contrats actifs)</span><span style="font-weight:bold;">${formatGNF(chiffres.epargneNette)}</span></div>
+        <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(chiffres.commissionPdg)}</span></div>
+        <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(chiffres.commissionCollecteur)}</span></div>
+        <div class="detail-line"><span>Prêts en cours</span><span>${formatGNF(chiffres.totalPretsEnCours)}</span></div>
+      </div>
+    `;
+  }).join("");
+}
+
 function obtenirBornesPeriode(type) {
   const maintenant = new Date();
   let debut, fin;
@@ -1909,14 +2118,20 @@ function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
   const commissionPdgInscriptions = totalJour1Periode * 0.70;
   const commissionCollecteurInscriptions = totalJour1Periode * 0.30;
 
+  const fraisPeriode = state.fraisInscriptions.filter(
+    (f) => f.collecteur_id === collecteurId && dateDansPeriode(f.date, debut, fin)
+  );
+  const fraisPdgPeriode = fraisPeriode.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+  const fraisCollecteurPeriode = fraisPeriode.reduce((s, f) => s + Number(f.montant_collecteur || 0), 0);
+
   const interetsPeriode = state.interetsPartages.filter(
     (i) => i.collecteur_id === collecteurId && dateDansPeriode(i.date, debut, fin)
   );
   const interetsPdgPeriode = interetsPeriode.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
   const interetsCollecteurPeriode = interetsPeriode.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
 
-  const commissionPdg = commissionPdgInscriptions + interetsPdgPeriode;
-  const commissionCollecteur = commissionCollecteurInscriptions + interetsCollecteurPeriode;
+  const commissionPdg = commissionPdgInscriptions + fraisPdgPeriode + interetsPdgPeriode;
+  const commissionCollecteur = commissionCollecteurInscriptions + fraisCollecteurPeriode + interetsCollecteurPeriode;
   const commissionGlobale = commissionPdg + commissionCollecteur;
 
   const soldeEpargneNetPeriode = state.payments.filter(
@@ -2129,6 +2344,7 @@ async function reinitialiserTout() {
     "prets", "remboursements_prets", "versements_collecteur",
     "interets_prets_repartis", "codes_parrainage", "propositions_reconduction",
     "retraits_commission", "diffusions", "messages_prives",
+    "frais_inscription", "depenses", "redistributions_interets", "parametres",
   ];
 
   try {
@@ -2185,6 +2401,54 @@ document.getElementById("btn-reinitialiser-tout")?.addEventListener("click", () 
       await reinitialiserTout();
     });
   });
+});
+
+function renderApercu() {
+  const collecteursTous = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+
+  let commissionPdgDisponible = 0;
+  let commissionGlobaleTotale = 0;
+  let soldeGlobalEpargnes = 0;
+
+  collecteursTous.forEach((c) => {
+    const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+    const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+    commissionPdgDisponible += commissionPdg;
+    commissionGlobaleTotale += commissionPdg + commissionCollecteur;
+    soldeGlobalEpargnes += calculerSoldeEpargneNetCollecteur(c.uid);
+  });
+
+  document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
+  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionPdgDisponible);
+  document.getElementById("stat-commission-globale").textContent = formatGNF(commissionGlobaleTotale);
+  document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
+  document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
+
+  renderCardsParType();
+
+  const { parMois } = calculerSoldes(state.payments, state.contracts);
+  const cles = Object.keys(parMois).sort().reverse();
+  const container = document.getElementById("monthly-breakdown");
+  if (cles.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune donnée pour le moment.</p>`;
+  } else {
+    container.innerHTML = cles.slice(0, 12).map((cle) => `
+      <div class="monthly-row">
+        <span class="monthly-mois">${nomMois(cle)}</span>
+        <span class="monthly-detail">
+          Épargnes : <b class="epargne">${formatGNF(parMois[cle].epargnes)}</b><br/>
+          Commissions : <b class="commission">${formatGNF(parMois[cle].commissions)}</b>
+        </span>
+      </div>
+    `).join("");
+  }
+}
+
+document.getElementById("titre-historique-mensuel").addEventListener("click", () => {
+  const titre = document.getElementById("titre-historique-mensuel");
+  const zone = document.getElementById("monthly-breakdown");
+  zone.classList.toggle("hidden");
+  titre.classList.toggle("ouvert");
 });
 
 demarrer();
