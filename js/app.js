@@ -250,6 +250,7 @@ function lancerDashboard() {
   });
   const unsubPayments = onSnapshot(collection(db, "payments"), (snap) => {
     state.payments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    verrouillerAutomatiquement(); // === CORRECTIF : verrouillage auto après 24h ===
     render();
   });
   const unsubDecaissements = onSnapshot(collection(db, "decaissements"), (snap) => {
@@ -1499,6 +1500,34 @@ function heuresRestantesAvantVerrouillage(payment) {
   return restant > 0 ? Math.ceil(restant / (60 * 60 * 1000)) : 0;
 }
 
+// === CORRECTIF : verrouillage (confirmation) 100% automatique après 24h ===
+// Avant ce correctif, un versement passé "collecte" restait bloqué à ce
+// statut tant que le PDG n'allait pas cliquer manuellement sur "Verrouiller
+// (Confirmer)" dans l'onglet Confirmations. Or la commission PDG (70%) et
+// collecteur (30%) du jour 1 ne compte que les versements au statut
+// "confirme" -> résultat : la commission n'augmentait jamais toute seule.
+// Cette fonction verrouille automatiquement, dès que 24h sont passées,
+// sans action de l'utilisateur.
+let verrouillageAutoEnCours = false;
+async function verrouillerAutomatiquement() {
+  if (verrouillageAutoEnCours) return;
+  const aVerrouiller = state.payments.filter((p) => p.statut === "collecte" && estVerrouillable(p));
+  if (aVerrouiller.length === 0) return;
+  verrouillageAutoEnCours = true;
+  try {
+    for (const p of aVerrouiller) {
+      await updateDoc(doc(db, "payments", p.id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.error("Erreur verrouillage automatique :", err);
+  } finally {
+    verrouillageAutoEnCours = false;
+  }
+}
+
 function renderConfirmations() {
   const container = document.getElementById("liste-confirmations");
   if (!container) return;
@@ -1545,7 +1574,7 @@ function renderConfirmations() {
   }
 
   html += `<h3 style="font-size:14px; margin:16px 0 8px;">Prêts à verrouiller (24h écoulées)</h3>
-    <p class="subtitle-sm" style="margin-bottom:10px;">Confirmez pour verrouiller définitivement (l'opération ne sera plus annulable et la commission sera comptabilisée).</p>`;
+    <p class="subtitle-sm" style="margin-bottom:10px;">Ceux-ci se verrouillent automatiquement au prochain rafraîchissement ; le bouton reste utile pour forcer le verrouillage immédiatement.</p>`;
   if (pretsAConfirmer.length === 0) {
     html += `<p class="empty-state">Aucun versement prêt à verrouiller.</p>`;
   } else {
