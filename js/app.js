@@ -32,7 +32,6 @@ const state = {
   retraitsCommission: [],
   diffusions: [],
   messagesPrives: [],
-  // --- NOUVEAU (25 août 2026) : types de contrats ---
   fraisInscriptions: [],
   depenses: [],
   redistributions: [],
@@ -250,7 +249,7 @@ function lancerDashboard() {
   });
   const unsubPayments = onSnapshot(collection(db, "payments"), (snap) => {
     state.payments = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-    verrouillerAutomatiquement(); // === CORRECTIF : verrouillage auto après 24h ===
+    verrouillerAutomatiquement();
     render();
   });
   const unsubDecaissements = onSnapshot(collection(db, "decaissements"), (snap) => {
@@ -305,7 +304,6 @@ function lancerDashboard() {
     state.messagesPrives = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
   });
-  // --- NOUVEAU (25 août 2026) : types de contrats ---
   const unsubFraisInscription = onSnapshot(collection(db, "frais_inscription"), (snap) => {
     state.fraisInscriptions = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
     render();
@@ -350,10 +348,6 @@ function render() {
   renderRapportParType();
 }
 
-// ==========================================================
-// --- NOUVEAU (25 août 2026) : paramètres de répartition ---
-// ==========================================================
-
 function preremplirFormulaireParametres() {
   const form = document.getElementById("form-parametres-interets");
   if (!form) return;
@@ -392,13 +386,6 @@ document.getElementById("form-parametres-interets").addEventListener("submit", a
   }
 });
 
-// ==========================================================
-// --- NOUVEAU (25 août 2026) : calculs généralisés par type de contrat ---
-// Mêmes règles que dans l'app Collecteur : journalier exclut jour_numero===1
-// de l'épargne nette ; hebdo/mensuel comptent tous les versements, moins les
-// dépenses non compensées, plus les redistributions reçues.
-// ==========================================================
-
 function calculerEpargneNetteContrat(contrat) {
   const typeContrat = contrat.type_contrat || "journalier";
   const versements = state.payments.filter((p) => p.contract_id === contrat.id && p.statut !== "annule");
@@ -428,8 +415,6 @@ function avatarImg(u, taille) {
   return `<img class="${classe}" src="${u && u.photoURL ? u.photoURL : AVATAR_DEFAUT}" alt="${u ? u.nom : ''}" />`;
 }
 
-// Commission PDG : 70% du jour 1 (journalier confirmé) + part PDG des frais
-// d'inscription (hebdo/mensuel) + part PDG des intérêts de prêt (tous types).
 function calculerCommissionPdgParCollecteur(collecteurId) {
   const jour1Confirmes = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
@@ -851,6 +836,14 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
 // Suppression réelle des documents Firestore (plus de simple statut
 // "supprime"). Un collecteur ne peut être supprimé qu'une fois tous ses
 // membres transférés (par lots cochés) vers un autre collecteur.
+//
+// CORRECTIF (13 sept 2026) : lors d'un transfert de membre, la commission
+// déjà verrouillée (payments jour 1 confirmés, frais_inscription,
+// interets_prets_repartis) reste rattachée à l'ANCIEN collecteur — elle
+// n'est jamais réassignée. Seuls l'épargne du membre (payments jour>1, ou
+// jour 1 pas encore confirmé) et les autres documents opérationnels
+// (contracts, prets, remboursements, retraits, dépenses, redistributions,
+// propositions de reconduction) suivent le membre vers le nouveau collecteur.
 // ==========================================================
 
 async function supprimerDocumentsParChamp(nomCollection, champ, valeur) {
@@ -861,14 +854,28 @@ async function supprimerDocumentsParChamp(nomCollection, champ, valeur) {
 }
 
 async function reassignerCollectionsMembre(membreUid, nouveauCollecteurId) {
+  // --- payments : seule l'épargne suit le membre. La commission jour 1
+  // déjà confirmée (verrouillée) reste chez l'ancien collecteur. ---
+  const paymentsSnap = await getDocs(query(collection(db, "payments"), where("membre_id", "==", membreUid)));
+  for (const d of paymentsSnap.docs) {
+    const p = d.data();
+    const estCommissionVerrouillee = p.jour_numero === 1 && p.statut === "confirme";
+    if (!estCommissionVerrouillee) {
+      await updateDoc(doc(db, "payments", d.id), { collecteur_id: nouveauCollecteurId });
+    }
+    // sinon : on ne touche pas au collecteur_id, la commission reste à l'ancien collecteur.
+  }
+
+  // --- frais_inscription et interets_prets_repartis : commission déjà
+  // déduite/répartie, reste intégralement chez l'ancien collecteur. ---
+  // (aucune action : on ne les réassigne jamais)
+
+  // --- collections qui suivent normalement le membre ---
   const collectionsAModifier = [
     { nom: "contracts", champ: "membre_id" },
-    { nom: "payments", champ: "membre_id" },
     { nom: "withdrawalRequests", champ: "memberId" },
     { nom: "prets", champ: "membre_id" },
     { nom: "remboursements_prets", champ: "membre_id" },
-    { nom: "interets_prets_repartis", champ: "membre_id" },
-    { nom: "frais_inscription", champ: "membre_id" },
     { nom: "depenses", champ: "membre_id" },
     { nom: "redistributions_interets", champ: "membre_id" },
     { nom: "propositions_reconduction", champ: "membre_id" },
@@ -1608,10 +1615,6 @@ async function genererEtAfficherCode(type) {
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
 }
 
-// ==========================================================
-// --- Onglet "Confirmations" : verrouillage à 24h (23 août 2026) ---
-// ==========================================================
-
 function estVerrouillable(payment) {
   if (!payment.date || !payment.date.toDate) return false;
   const dateMs = payment.date.toDate().getTime();
@@ -1625,7 +1628,6 @@ function heuresRestantesAvantVerrouillage(payment) {
   return restant > 0 ? Math.ceil(restant / (60 * 60 * 1000)) : 0;
 }
 
-// === CORRECTIF : verrouillage (confirmation) 100% automatique après 24h ===
 let verrouillageAutoEnCours = false;
 async function verrouillerAutomatiquement() {
   if (verrouillageAutoEnCours) return;
@@ -2131,10 +2133,6 @@ async function ouvrirFilMessagerie(participantId) {
     }
   }
 }
-
-// ==========================================================
-// --- NOUVEAU (25 août 2026) : Aperçu et Rapport par type de contrat ---
-// ==========================================================
 
 function calculerChiffresParType(typeContratCle) {
   const contrats = state.contracts.filter((c) => (c.type_contrat || "journalier") === typeContratCle);
