@@ -846,57 +846,186 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
   }
 });
 
+// ==========================================================
+// --- NOUVEAU (13 sept 2026) : purge définitive et transfert forcé ---
+// Suppression réelle des documents Firestore (plus de simple statut
+// "supprime"). Un collecteur ne peut être supprimé qu'une fois tous ses
+// membres transférés (par lots cochés) vers un autre collecteur.
+// ==========================================================
+
+async function supprimerDocumentsParChamp(nomCollection, champ, valeur) {
+  const snap = await getDocs(query(collection(db, nomCollection), where(champ, "==", valeur)));
+  for (const d of snap.docs) {
+    await deleteDoc(doc(db, nomCollection, d.id));
+  }
+}
+
+async function reassignerCollectionsMembre(membreUid, nouveauCollecteurId) {
+  const collectionsAModifier = [
+    { nom: "contracts", champ: "membre_id" },
+    { nom: "payments", champ: "membre_id" },
+    { nom: "withdrawalRequests", champ: "memberId" },
+    { nom: "prets", champ: "membre_id" },
+    { nom: "remboursements_prets", champ: "membre_id" },
+    { nom: "interets_prets_repartis", champ: "membre_id" },
+    { nom: "frais_inscription", champ: "membre_id" },
+    { nom: "depenses", champ: "membre_id" },
+    { nom: "redistributions_interets", champ: "membre_id" },
+    { nom: "propositions_reconduction", champ: "membre_id" },
+  ];
+  for (const { nom, champ } of collectionsAModifier) {
+    const snap = await getDocs(query(collection(db, nom), where(champ, "==", membreUid)));
+    for (const d of snap.docs) {
+      await updateDoc(doc(db, nom, d.id), { collecteur_id: nouveauCollecteurId });
+    }
+  }
+}
+
+async function reassignerMembresSpecifiques(membreUids, nouveauCollecteurId) {
+  for (const membreUid of membreUids) {
+    await updateDoc(doc(db, "users", membreUid), { parrain_id: nouveauCollecteurId });
+    await reassignerCollectionsMembre(membreUid, nouveauCollecteurId);
+  }
+}
+
+async function purgerMembreDefinitivement(membreUid) {
+  const collectionsMembre = [
+    { nom: "contracts", champ: "membre_id" },
+    { nom: "payments", champ: "membre_id" },
+    { nom: "withdrawalRequests", champ: "memberId" },
+    { nom: "prets", champ: "membre_id" },
+    { nom: "remboursements_prets", champ: "membre_id" },
+    { nom: "interets_prets_repartis", champ: "membre_id" },
+    { nom: "frais_inscription", champ: "membre_id" },
+    { nom: "depenses", champ: "membre_id" },
+    { nom: "redistributions_interets", champ: "membre_id" },
+    { nom: "propositions_reconduction", champ: "membre_id" },
+    { nom: "messages_prives", champ: "participant_id" },
+  ];
+  for (const { nom, champ } of collectionsMembre) {
+    await supprimerDocumentsParChamp(nom, champ, membreUid);
+  }
+  await deleteDoc(doc(db, "users", membreUid));
+}
+
+async function purgerCollecteurDefinitivement(collecteurUid) {
+  const collectionsCollecteur = [
+    { nom: "contracts", champ: "collecteur_id" },
+    { nom: "payments", champ: "collecteur_id" },
+    { nom: "withdrawalRequests", champ: "collecteur_id" },
+    { nom: "prets", champ: "collecteur_id" },
+    { nom: "remboursements_prets", champ: "collecteur_id" },
+    { nom: "interets_prets_repartis", champ: "collecteur_id" },
+    { nom: "retraits_commission", champ: "collecteur_id" },
+    { nom: "versements_collecteur", champ: "collecteur_id" },
+    { nom: "frais_inscription", champ: "collecteur_id" },
+    { nom: "depenses", champ: "collecteur_id" },
+    { nom: "redistributions_interets", champ: "collecteur_id" },
+    { nom: "propositions_reconduction", champ: "collecteur_id" },
+    { nom: "messages_prives", champ: "participant_id" },
+  ];
+  for (const { nom, champ } of collectionsCollecteur) {
+    await supprimerDocumentsParChamp(nom, champ, collecteurUid);
+  }
+  await deleteDoc(doc(db, "users", collecteurUid));
+}
+
+let etatSuppressionCollecteur = null;
+
 function ouvrirSuppressionCollecteur(collecteurId, nom) {
-  const autresCollecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime" && u.uid !== collecteurId);
-  const nbClients = state.users.filter((u) => u.role === "membre" && u.parrain_id === collecteurId).length;
+  const membresRestants = state.users.filter(
+    (u) => u.role === "membre" && u.statut !== "supprime" && u.parrain_id === collecteurId
+  );
+  etatSuppressionCollecteur = { collecteurId, nom, membresRestants: [...membresRestants] };
+  rendreModalSuppressionCollecteur();
+}
+
+function rendreModalSuppressionCollecteur() {
+  const { collecteurId, nom, membresRestants } = etatSuppressionCollecteur;
+  const autresCollecteurs = state.users.filter(
+    (u) => u.role === "collecteur" && u.statut !== "supprime" && u.uid !== collecteurId
+  );
+
+  if (membresRestants.length === 0) {
+    ouvrirModal(`
+      <h2>Supprimer ${nom} ?</h2>
+      <p class="subtitle-sm">Tous les membres ont été transférés. Le compte et tout son historique propre (versements, commissions, rapports) seront supprimés définitivement. Cette action est irréversible.</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="button" class="btn btn-danger" id="modal-confirmer-purge-collecteur" style="flex:1;">Supprimer définitivement</button>
+      </div>
+    `);
+    document.getElementById("modal-annuler").addEventListener("click", () => {
+      etatSuppressionCollecteur = null;
+      fermerModal();
+    });
+    document.getElementById("modal-confirmer-purge-collecteur").addEventListener("click", async () => {
+      try {
+        await purgerCollecteurDefinitivement(collecteurId);
+        notifier("Collecteur supprimé définitivement.", "succes");
+        etatSuppressionCollecteur = null;
+        fermerModal();
+      } catch (err) {
+        console.error(err);
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    });
+    return;
+  }
 
   ouvrirModal(`
     <h2>Supprimer ${nom} ?</h2>
-    <p class="subtitle-sm">${nbClients} client(s) seront transférés. Le compte sera désactivé et le collecteur ne pourra plus se connecter.</p>
+    <p class="subtitle-sm">Ce collecteur a encore <b>${membresRestants.length}</b> membre(s). Cochez ceux à transférer, choisissez le collecteur de destination, puis validez. Répétez par lots si besoin — la suppression définitive ne sera possible qu'une fois l'effectif à zéro.</p>
+    <div style="max-height:220px; overflow-y:auto; margin:10px 0;">
+      ${membresRestants.map((m) => `
+        <label style="display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #eee;">
+          <input type="checkbox" value="${m.uid}" class="case-membre-transfert" />
+          <span>${m.nom} — ${m.telephone}</span>
+        </label>
+      `).join("")}
+    </div>
     <div class="field-row">
-      <label>Transférer ses clients vers</label>
-      <select name="destination" id="select-destination-clients">
-        <option value="pdg">Moi-même (portefeuille PDG)</option>
-        ${autresCollecteurs.map((c) => `<option value="${c.uid}">${c.nom}</option>`).join("")}
+      <label>Nouveau collecteur pour la sélection</label>
+      <select id="select-nouveau-collecteur-lot">
+        ${autresCollecteurs.length === 0
+          ? `<option value="">-- Aucun autre collecteur disponible --</option>`
+          : autresCollecteurs.map((c) => `<option value="${c.uid}">${c.nom}</option>`).join("")}
       </select>
     </div>
     <div class="modal-actions">
-      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
-      <button type="button" class="btn btn-danger" id="modal-confirmer-suppression" style="flex:1;">Confirmer la suppression</button>
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+      <button type="button" class="btn btn-primary" id="btn-transferer-lot" style="flex:1;">Transférer la sélection</button>
     </div>
   `);
-  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
-  document.getElementById("modal-confirmer-suppression").addEventListener("click", async () => {
-    const destinationId = document.getElementById("select-destination-clients").value;
+  document.getElementById("modal-annuler").addEventListener("click", () => {
+    etatSuppressionCollecteur = null;
+    fermerModal();
+  });
+  document.getElementById("btn-transferer-lot").addEventListener("click", async () => {
+    const cases = Array.from(document.querySelectorAll(".case-membre-transfert:checked"));
+    const uidsSelectionnes = cases.map((c) => c.value);
+    const destinationId = document.getElementById("select-nouveau-collecteur-lot").value;
+
+    if (uidsSelectionnes.length === 0) {
+      notifier("Cochez au moins un membre à transférer.", "erreur");
+      return;
+    }
+    if (!destinationId) {
+      notifier("Choisissez un collecteur de destination.", "erreur");
+      return;
+    }
     try {
-      await reassignerClientsCollecteur(collecteurId, destinationId);
-      await updateDoc(doc(db, "users", collecteurId), { statut: "supprime" });
-      notifier("Collecteur supprimé et clients transférés.", "succes");
-      fermerModal();
+      await reassignerMembresSpecifiques(uidsSelectionnes, destinationId);
+      notifier(`${uidsSelectionnes.length} membre(s) transféré(s).`, "succes");
+      etatSuppressionCollecteur.membresRestants = etatSuppressionCollecteur.membresRestants.filter(
+        (m) => !uidsSelectionnes.includes(m.uid)
+      );
+      rendreModalSuppressionCollecteur();
     } catch (err) {
       console.error(err);
       notifier("Erreur : " + err.message, "erreur");
     }
   });
-}
-
-async function reassignerClientsCollecteur(ancienCollecteurId, nouveauCollecteurId) {
-  const nouvelUid = nouveauCollecteurId === "pdg" ? state.currentUser.uid : nouveauCollecteurId;
-
-  const membres = state.users.filter((u) => u.role === "membre" && u.parrain_id === ancienCollecteurId);
-  for (const membre of membres) {
-    await updateDoc(doc(db, "users", membre.uid), { parrain_id: nouvelUid });
-  }
-
-  const contrats = state.contracts.filter((c) => c.collecteur_id === ancienCollecteurId);
-  for (const contrat of contrats) {
-    await updateDoc(doc(db, "contracts", contrat.id), { collecteur_id: nouvelUid });
-  }
-
-  const paiements = state.payments.filter((p) => p.collecteur_id === ancienCollecteurId);
-  for (const paiement of paiements) {
-    await updateDoc(doc(db, "payments", paiement.id), { collecteur_id: nouvelUid });
-  }
 }
 
 document.getElementById("btn-quitter-substitution").addEventListener("click", () => {
@@ -1146,16 +1275,12 @@ document.getElementById("liste-membres").addEventListener("click", (e) => {
   if (btnSupprimer) {
     const { uid, nom } = btnSupprimer.dataset;
     ouvrirModalConfirmation(
-      `Supprimer ${nom} ?`,
-      "Le compte sera désactivé et le membre ne pourra plus se connecter. L'historique de ses versements reste conservé.",
+      `Supprimer définitivement ${nom} ?`,
+      "Cette action supprime définitivement ce membre et tout son historique (contrats, versements, commissions, prêts, dépenses, messages). Utilisez aussi cette option pour un membre fictif ou un compte doublon. Cette action est irréversible.",
       async () => {
         try {
-          await updateDoc(doc(db, "users", uid), { statut: "supprime" });
-          const contratActif = state.contracts.find((c) => c.membre_id === uid && c.statut === "actif");
-          if (contratActif) {
-            await updateDoc(doc(db, "contracts", contratActif.id), { statut: "annule" });
-          }
-          notifier("Membre supprimé.", "succes");
+          await purgerMembreDefinitivement(uid);
+          notifier("Membre supprimé définitivement.", "succes");
           fermerModal();
         } catch (err) {
           console.error(err);
@@ -1501,13 +1626,6 @@ function heuresRestantesAvantVerrouillage(payment) {
 }
 
 // === CORRECTIF : verrouillage (confirmation) 100% automatique après 24h ===
-// Avant ce correctif, un versement passé "collecte" restait bloqué à ce
-// statut tant que le PDG n'allait pas cliquer manuellement sur "Verrouiller
-// (Confirmer)" dans l'onglet Confirmations. Or la commission PDG (70%) et
-// collecteur (30%) du jour 1 ne compte que les versements au statut
-// "confirme" -> résultat : la commission n'augmentait jamais toute seule.
-// Cette fonction verrouille automatiquement, dès que 24h sont passées,
-// sans action de l'utilisateur.
 let verrouillageAutoEnCours = false;
 async function verrouillerAutomatiquement() {
   if (verrouillageAutoEnCours) return;
