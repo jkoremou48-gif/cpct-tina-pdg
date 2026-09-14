@@ -1527,3 +1527,187 @@ function ouvrirModalConfirmation(titre, texte, onConfirm) {
   document.getElementById("modal-confirmer").addEventListener("click", onConfirm);
 }
 // === FIN PDG — PARTIE 2/3 ===
+// === PDG — PARTIE 3/3 ===
+document.getElementById("btn-decaisser").addEventListener("click", () => {
+  const { totalCommissions } = calculerSoldes(state.payments, state.contracts);
+  const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
+  const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const totalFraisInscriptionPdg = state.fraisInscriptions.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+  const totalRetraitsCommissionPdg = state.retraitsCommission
+    .filter((r) => r.beneficiaire_role === "pdg" && r.statut === "confirme")
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  const disponible = totalCommissions + totalInteretsPdg + totalFraisInscriptionPdg - totalDecaisse - totalRetraitsCommissionPdg;
+  ouvrirModal(`
+    <h2>Décaisser des commissions</h2>
+    <p class="subtitle-sm">Montant disponible : <b>${formatGNF(disponible)}</b></p>
+    <form id="form-decaisser">
+      <div class="field-row">
+        <label>Montant à décaisser (GNF)</label>
+        <input type="number" name="montant" min="1" max="${disponible}" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Confirmer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-decaisser").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const montant = Number(new FormData(e.target).get("montant"));
+    if (montant > disponible) { notifier("Montant supérieur au solde disponible.", "erreur"); return; }
+    await addDoc(collection(db, "decaissements"), {
+      montant, pdg_id: state.currentUser.uid, date: new Date().toISOString(),
+    });
+    notifier("Décaissement enregistré.", "succes");
+    fermerModal();
+  });
+});
+
+document.getElementById("btn-nouveau-partenaire").addEventListener("click", () => {
+  ouvrirModal(`
+    <h2>Créer un nouveau partenaire</h2>
+    <p class="subtitle-sm">Choisissez le type de compte à inviter. Un code sera généré : transmettez-le à la personne pour qu'elle finalise son inscription sur l'application correspondante.</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-code-collecteur" style="flex:1;">Nouveau collecteur</button>
+    </div>
+  `);
+  document.getElementById("btn-code-collecteur").addEventListener("click", () => genererEtAfficherCode("collecteur"));
+});
+
+document.getElementById("btn-nouveau-collecteur").addEventListener("click", () => genererEtAfficherCode("collecteur"));
+
+async function genererEtAfficherCode(type) {
+  const prefixe = type === "collecteur" ? "COL" : "MBR";
+  const code = genererCodeParrain(prefixe);
+  await setDoc(doc(db, "codes_parrainage", code), {
+    proprietaire_id: state.currentUser.uid,
+    type,
+    actif: true,
+    date_creation: serverTimestamp(),
+  });
+  ouvrirModal(`
+    <h2>Code généré</h2>
+    <p class="subtitle-sm">Transmettez ce code au futur ${type === "collecteur" ? "collecteur" : "membre"}. Il devra le saisir lors de son inscription.</p>
+    <div class="code-display">${code}</div>
+    <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-code" style="flex:1;">Terminé</button></div>
+  `);
+  document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
+}
+
+function estVerrouillable(payment) {
+  if (!payment.date || !payment.date.toDate) return false;
+  const dateMs = payment.date.toDate().getTime();
+  return (Date.now() - dateMs) >= 24 * 60 * 60 * 1000;
+}
+
+function heuresRestantesAvantVerrouillage(payment) {
+  if (!payment.date || !payment.date.toDate) return null;
+  const dateMs = payment.date.toDate().getTime();
+  const restant = 24 * 60 * 60 * 1000 - (Date.now() - dateMs);
+  return restant > 0 ? Math.ceil(restant / (60 * 60 * 1000)) : 0;
+}
+
+let verrouillageAutoEnCours = false;
+async function verrouillerAutomatiquement() {
+  if (verrouillageAutoEnCours) return;
+  const aVerrouiller = state.payments.filter((p) => p.statut === "collecte" && estVerrouillable(p));
+  if (aVerrouiller.length === 0) return;
+  verrouillageAutoEnCours = true;
+  try {
+    for (const p of aVerrouiller) {
+      await updateDoc(doc(db, "payments", p.id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.error("Erreur verrouillage automatique :", err);
+  } finally {
+    verrouillageAutoEnCours = false;
+  }
+}
+
+function renderConfirmations() {
+  const container = document.getElementById("liste-confirmations");
+  if (!container) return;
+
+  const enAttente = state.payments.filter((p) => p.statut === "collecte");
+  const enVerification = enAttente.filter((p) => !estVerrouillable(p));
+  const pretsAConfirmer = enAttente.filter((p) => estVerrouillable(p));
+  const verrouilles = state.payments
+    .filter((p) => p.statut === "confirme")
+    .sort((a, b) => {
+      const da = a.date && a.date.toDate ? a.date.toDate() : new Date(0);
+      const dbb = b.date && b.date.toDate ? b.date.toDate() : new Date(0);
+      return dbb - da;
+    })
+    .slice(0, 100);
+
+  let html = "";
+
+  html += `<h3 style="font-size:14px; margin-bottom:8px;">En période de vérification (moins de 24h)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Déjà comptés dans le solde du membre. Vous pouvez encore annuler en cas d'erreur signalée par le collecteur.</p>`;
+  if (enVerification.length === 0) {
+    html += `<p class="empty-state">Aucun versement en période de vérification.</p>`;
+  } else {
+    html += enVerification.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      const h = heuresRestantesAvantVerrouillage(p);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+              <p class="entity-sub">Verrouillable dans ${h !== null ? h + "h" : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Prêts à verrouiller (24h écoulées)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Ceux-ci se verrouillent automatiquement au prochain rafraîchissement ; le bouton reste utile pour forcer le verrouillage immédiatement.</p>`;
+  if (pretsAConfirmer.length === 0) {
+    html += `<p class="empty-state">Aucun versement prêt à verrouiller.</p>`;
+  } else {
+    html += pretsAConfirmer.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+            <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Verrouiller (Confirmer)</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique verrouillé</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Ces opérations sont définitives et ne peuvent plus être annulées.</p>`;
+  if (verrouilles.length === 0) {
+    html += `<p class="empty-state">Aucun encaissement verrouillé pour le moment.</p>`;
+  } else {
+    html += verrouilles.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
