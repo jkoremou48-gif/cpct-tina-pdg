@@ -136,6 +136,7 @@
   <button class="tab-btn" data-tab="confirmations">Confirmations</button>
   <button class="tab-btn" data-tab="attente">Membres en attente</button>
   <button class="tab-btn" data-tab="retraits">Retraits</button>
+  <button class="tab-btn" data-tab="tournantes">Caisses tournantes</button>
   <button class="tab-btn" data-tab="communication">Communication</button>
   <button class="tab-btn" data-tab="rapport">Rapport</button>
   <button class="tab-btn" data-tab="parametres">Paramètres</button>
@@ -220,6 +221,8 @@
       <p class="subtitle-sm">Traitez chaque demande de retrait envoyée par les membres.</p>
       <div id="liste-retraits" class="entity-list"></div>
     </div>
+
+    <div id="tab-tournantes" class="tab-panel hidden"></div>
 
     <div id="tab-communication" class="tab-panel hidden">
       <div class="list-header">
@@ -326,5 +329,6 @@
 </script>
 
 <script type="module" src="js/app.js"></script>
+<script type="module" src="js/tournante.js"></script>
 </body>
 </html>
