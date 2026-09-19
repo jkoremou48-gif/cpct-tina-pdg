@@ -1,10 +1,11 @@
 // js/tournante.js — Tontine tournante (espace PDG)
 import {
   auth, db, onAuthStateChanged, doc, getDoc, setDoc, updateDoc,
-  collection, onSnapshot, serverTimestamp,
+  collection, onSnapshot, serverTimestamp, creerCompteSecondaire,
 } from "./firebase-config.js";
 import { writeBatch } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { formatGNF, formatDate, notifier } from "./utils.js";
+import { adhererCaisse, finaliserAdhesionsEnAttente } from "./tournante-commun.js";
 
 // ---------- Constantes ----------
 const PCT_COLLECTEUR = 30;
@@ -52,6 +53,7 @@ const etat = {
   membres: [],
   reunions: [],
   operations: [],
+  propositions: [],
   vue: { type: "liste", caisseId: null, reunionId: null },
   occupe: false,
 };
@@ -627,17 +629,49 @@ function ouvrirNouvelleCaisse() {
 }
 
 // ---------- Membres ----------
+function afficherIdentifiants(nom, telephone, motDePasse) {
+  ouvrirModal(`
+    <h2>Identifiants du membre</h2>
+    <p class="subtitle-sm">À transmettre oralement à ${esc(nom)}</p>
+    <div class="detail-line"><span>Téléphone</span><span><b>${esc(telephone)}</b></span></div>
+    <div class="detail-line"><span>Mot de passe</span><span><b>${esc(motDePasse)}</b></span></div>
+    <p class="subtitle-sm" style="color:#c0392b; margin-top:8px;">Ce mot de passe ne sera plus affiché : transmettez-le maintenant.</p>
+    <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-id" style="flex:1;">J'ai transmis les identifiants</button></div>
+  `);
+  document.getElementById("modal-fermer-id").addEventListener("click", fermerModal);
+}
+
 function ouvrirAjoutMembre(caisse) {
   if (!inscriptionsOuvertes(caisse)) {
     notifier("Les inscriptions sont closes pour cette caisse.", "erreur");
     return;
   }
+  const dejaInscrits = new Set(membresDe(caisse.id).map((m) => m.membre_uid).filter(Boolean));
+  const candidats = etat.utilisateurs
+    .filter((u) => u.role === "membre" && u.statut !== "supprime" && !dejaInscrits.has(u.uid))
+    .sort((a, b) => String(a.nom || "").localeCompare(String(b.nom || ""), "fr"));
+
   ouvrirModal(`
     <h2>Ajouter un membre</h2>
-    <p class="subtitle-sm">Caution à verser : <b>${formatGNF(caisse.montant_caution)}</b>, dont <b>${formatGNF(caisse.frais_inscription)}</b> de frais d'inscription prélevés sur cette caution.</p>
+    <p class="subtitle-sm">Caution à verser : <b>${formatGNF(caisse.montant_caution)}</b>, dont <b>${formatGNF(caisse.frais_inscription)}</b> de frais d'inscription prélevés sur cette caution (enregistrés automatiquement).</p>
     <form id="form-ajout-membre-tt">
-      <div class="field-row"><label>Nom complet</label><input type="text" name="nom" required /></div>
-      <div class="field-row"><label>Téléphone</label><input type="tel" name="telephone" required /></div>
+      <label style="flex-direction:row; align-items:center; gap:8px;"><input type="radio" name="mode" value="existant" checked /> Membre TINA existant</label>
+      <label style="flex-direction:row; align-items:center; gap:8px;"><input type="radio" name="mode" value="nouveau" /> Nouveau membre (création du compte)</label>
+      <div id="bloc-existant" class="field-row" style="margin-top:8px;">
+        <label>Membre</label>
+        <select name="membre_uid">
+          ${candidats.length === 0
+            ? `<option value="">Aucun membre disponible</option>`
+            : candidats.map((u) => `<option value="${u.uid}">${esc(u.nom)} — ${esc(u.telephone || "")}</option>`).join("")}
+        </select>
+      </div>
+      <div id="bloc-nouveau" class="hidden" style="margin-top:8px;">
+        <div class="field-row"><label>Nom complet</label><input type="text" name="nom" /></div>
+        <div class="field-row"><label>Téléphone (identifiant de connexion)</label><input type="tel" name="telephone" /></div>
+        <div class="field-row"><label>E-mail</label><input type="email" name="email" /></div>
+        <div class="field-row"><label>Résidence</label><input type="text" name="residence" /></div>
+        <p class="subtitle-sm">Le compte est créé automatiquement (mot de passe : 6 derniers chiffres du téléphone) et rattaché au collecteur de la caisse.</p>
+      </div>
       <div class="modal-actions">
         <button type="button" class="btn btn-ghost-sm" id="modal-annuler">Annuler</button>
         <button type="submit" class="btn btn-primary">Inscrire</button>
@@ -645,49 +679,55 @@ function ouvrirAjoutMembre(caisse) {
     </form>
   `);
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.querySelectorAll("#form-ajout-membre-tt input[name='mode']").forEach((r) => {
+    r.addEventListener("change", () => {
+      const nouveau = document.querySelector("#form-ajout-membre-tt input[name='mode']:checked").value === "nouveau";
+      document.getElementById("bloc-nouveau").classList.toggle("hidden", !nouveau);
+      document.getElementById("bloc-existant").classList.toggle("hidden", nouveau);
+    });
+  });
+
   document.getElementById("form-ajout-membre-tt").addEventListener("submit", (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
-    const nom = String(fd.get("nom")).trim();
-    const telephone = String(fd.get("telephone")).trim();
+    const mode = fd.get("mode");
     executer(async () => {
-      await ajouterMembre(caisse, nom, telephone);
-      fermerModal();
-    }, "Membre inscrit.");
-  });
-}
+      let uid;
+      let nom;
+      let telephone;
+      let identifiants = null;
 
-async function ajouterMembre(caisse, nom, telephone) {
-  if (!inscriptionsOuvertes(caisse)) throw new Error("Les inscriptions sont closes.");
-  const existants = membresDe(caisse.id);
-  const chiffres = telephone.replace(/\D/g, "");
-  if (existants.some((m) => (m.telephone || "").replace(/\D/g, "") === chiffres)) {
-    throw new Error("Ce numéro est déjà inscrit dans cette caisse.");
-  }
-  const batch = writeBatch(db);
-  const refMembre = doc(collection(db, "tournante_membres"));
-  batch.set(refMembre, {
-    caisse_id: caisse.id,
-    nom,
-    telephone,
-    rang: null,
-    ordre_inscription: Date.now(),
-    arrieres: [],
-    solde_retire: false,
-    date_inscription: serverTimestamp(),
+      if (mode === "existant") {
+        const u = candidats.find((x) => x.uid === fd.get("membre_uid"));
+        if (!u) throw new Error("Choisissez un membre.");
+        uid = u.uid;
+        nom = u.nom;
+        telephone = u.telephone || "";
+      } else {
+        nom = String(fd.get("nom") || "").trim();
+        telephone = String(fd.get("telephone") || "").trim();
+        const email = String(fd.get("email") || "").trim();
+        const residence = String(fd.get("residence") || "").trim();
+        if (!nom || !telephone || !email || !residence) throw new Error("Tous les champs du nouveau membre sont obligatoires.");
+        const chiffres = telephone.replace(/\D/g, "");
+        if (chiffres.length < 6) throw new Error("Numéro de téléphone invalide.");
+        const motDePasse = chiffres.slice(-6);
+        uid = await creerCompteSecondaire(`${chiffres}@membre.cpct-tina.local`, motDePasse);
+        await setDoc(doc(db, "users", uid), {
+          role: "membre",
+          nom, telephone, email, residence,
+          parrain_id: caisse.collecteur_id,
+          statut: "actif",
+          date_creation: serverTimestamp(),
+        });
+        identifiants = { telephone, motDePasse };
+      }
+
+      await adhererCaisse({ caisse, membreUid: uid, membreNom: nom, membreTelephone: telephone });
+      fermerModal();
+      if (identifiants) afficherIdentifiants(nom, identifiants.telephone, identifiants.motDePasse);
+    }, mode === "existant" ? "Membre inscrit." : null);
   });
-  const contexte = {};
-  const caution = entier(caisse.montant_caution);
-  const frais = entier(caisse.frais_inscription);
-  if (caution > 0) {
-    batch.set(refOp(), nouvelleOperation(caisse, refMembre.id, "caution", caution, "Caution déposée à l'inscription", contexte));
-  }
-  if (frais > 0) {
-    batch.set(refOp(), nouvelleOperation(caisse, refMembre.id, "frais_inscription", -frais, "Frais d'inscription", contexte));
-    const rep = calculerRepartition(frais, existants.length + 1);
-    ajouterRepartition(batch, caisse, [...existants, { id: refMembre.id }], rep, "Part 40 % — frais d'inscription", contexte, refMembre.id);
-  }
-  await batch.commit();
 }
 
 function ouvrirDemarrage(caisse) {
@@ -742,6 +782,7 @@ function ouvrirDemarrage(caisse) {
       ordre = saisies.sort((a, b) => a.rang - b.rang).map((s) => s.mid);
     }
     executer(async () => {
+      const premier = membres.find((m) => m.id === ordre[0]);
       const batch = writeBatch(db);
       ordre.forEach((mid, i) => batch.update(doc(db, "tournante_membres", mid), { rang: i + 1 }));
       batch.update(doc(db, "caisses_tournantes", caisse.id), {
@@ -749,6 +790,7 @@ function ouvrirDemarrage(caisse) {
         nb_tours: ordre.length,
         tour_actuel: 1,
         mode_ordre: mode,
+        beneficiaire_nom: premier ? premier.nom : "",
         date_demarrage: serverTimestamp(),
       });
       await batch.commit();
@@ -1050,9 +1092,12 @@ async function cloturerReunion(caisseId, reunionId) {
     date_cloture: serverTimestamp(),
   });
   const dernier = reunion.tour >= caisse.nb_tours;
+  const suivant = membres.find((m) => m.rang === reunion.tour + 1);
   batch.update(
     doc(db, "caisses_tournantes", caisse.id),
-    dernier ? { statut: "cloturee", date_cloture: serverTimestamp() } : { tour_actuel: reunion.tour + 1 }
+    dernier
+      ? { statut: "cloturee", date_cloture: serverTimestamp() }
+      : { tour_actuel: reunion.tour + 1, beneficiaire_nom: suivant ? suivant.nom : "" }
   );
   await batch.commit();
   etat.vue = { type: "caisse", caisseId: caisse.id, reunionId: null };
@@ -1175,11 +1220,12 @@ function arreterEcoutes() {
 
 function demarrerEcoutes() {
   arreterEcoutes();
-  const abonner = (nom, cle) => onSnapshot(
+  const abonner = (nom, cle, apres) => onSnapshot(
     collection(db, nom),
     (snap) => {
       etat[cle] = snap.docs.map((d) => ({ id: d.id, uid: d.id, ...d.data() }));
       render();
+      if (apres) apres();
     },
     (err) => console.error(`Écoute ${nom} :`, err)
   );
@@ -1188,7 +1234,11 @@ function demarrerEcoutes() {
     abonner("caisses_tournantes", "caisses"),
     abonner("tournante_membres", "membres"),
     abonner("tournante_reunions", "reunions"),
-    abonner("tournante_operations", "operations")
+    abonner("tournante_operations", "operations"),
+    // Adhésions confirmées par les membres : le PDG les finalise aussi (filet de sécurité)
+    abonner("propositions_nouveau_contrat", "propositions", () => {
+      finaliserAdhesionsEnAttente(etat.propositions).catch((err) => console.error(err));
+    })
   );
 }
 
