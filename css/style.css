@@ -100,3 +100,21 @@ input:focus { outline: 2px solid var(--or); outline-offset: 1px; border-color: v
 .toast-erreur { background: var(--terre-cuite); }
 .toast-succes { background: var(--emeraude); }
 @media (min-width: 720px) { .cards-grid { grid-template-columns: repeat(4, 1fr); } .tab-panel, .topbar { padding-left: 40px; padding-right: 40px; } }
+
+/* ===== Affichage ordinateur (écrans larges) ===== */
+@media (min-width: 900px) {
+  :root { --gutter: max(40px, calc((100vw - 1200px) / 2)); }
+  .topbar, .banner-substitution, .tabs, .tab-panel { padding-left: var(--gutter); padding-right: var(--gutter); }
+  .topbar { align-items: center; }
+  .topbar h1 { font-size: 24px; }
+  .tabs { flex-wrap: wrap; }
+  .tab-btn { white-space: nowrap; }
+  .tab-btn:hover { color: var(--indigo-deep); }
+  .cards-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
+  .stat-value { font-size: 22px; }
+  .entity-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px; align-items: start; }
+  .entity-list .empty-state { grid-column: 1 / -1; }
+  .entity-card:hover { box-shadow: 0 4px 14px rgba(12,23,41,0.10); }
+  #tab-communication .card, #tab-parametres .card { max-width: 760px; }
+  .modal-content { max-width: 560px; }
+}
