@@ -6,6 +6,14 @@
 <title>CPCT-TINA · Espace PDG</title>
 <meta name="theme-color" content="#14213D" />
 <link rel="manifest" href="manifest.json" />
+
+<!-- Installation sur iPhone (Safari) -->
+<link rel="apple-touch-icon" href="icon-192.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="TINA PDG" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/style.css" />
@@ -17,6 +25,13 @@
   .collapsible-title.ouvert::after { content: " ▴"; }
   .zone-titre { font-family: 'Fraunces', serif; font-size: 16px; font-weight: 600; color: #14213D; margin: 18px 0 8px 0; border-bottom: 2px solid #D9A441; padding-bottom: 4px; }
   .type-badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; background:#e9ecef; color:#333; margin-left:6px; }
+
+  /* Affichage ordinateur (écran large) */
+  @media (min-width: 900px) {
+    #app { max-width: 1200px; margin: 0 auto; }
+    .cards-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+    .tabs { flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
@@ -296,8 +311,27 @@
   <div id="modal-content" class="modal-content"></div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
+<!-- Console de débogage Eruda : chargée uniquement si l'adresse contient ?debug=1 -->
+<script>
+  if (location.search.indexOf('debug=1') !== -1) {
+    var erudaScript = document.createElement('script');
+    erudaScript.src = 'https://cdn.jsdelivr.net/npm/eruda';
+    erudaScript.onload = function () { if (window.eruda) { window.eruda.init(); } };
+    document.head.appendChild(erudaScript);
+  }
+</script>
+
+<!-- Service worker (nécessaire à l'installation de l'application) -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('./sw.js').catch(function (e) {
+        console.warn('Service worker non enregistré :', e);
+      });
+    });
+  }
+</script>
+
 <script type="module" src="js/app.js"></script>
 </body>
 </html>
