@@ -134,7 +134,6 @@
   <button class="tab-btn" data-tab="collecteurs">Collecteurs</button>
   <button class="tab-btn" data-tab="membres">Membres</button>
   <button class="tab-btn" data-tab="confirmations">Confirmations</button>
-  <button class="tab-btn" data-tab="attente">Membres en attente</button>
   <button class="tab-btn" data-tab="retraits">Retraits</button>
   <button class="tab-btn" data-tab="tournantes">Caisses tournantes</button>
   <button class="tab-btn" data-tab="communication">Communication</button>
@@ -207,13 +206,6 @@
       <div id="liste-confirmations" class="entity-list"></div>
     </div>
 
-    <div id="tab-attente" class="tab-panel hidden">
-      <div class="list-header">
-        <h2>Membres en attente de validation</h2>
-      </div>
-      <p class="subtitle-sm">Ces membres ont été enregistrés sur place par un collecteur. Validez chacun pour créer son compte de connexion (téléphone + mot de passe).</p>
-      <div id="liste-attente" class="entity-list"></div>
-    </div>
     <div id="tab-retraits" class="tab-panel hidden">
       <div class="list-header">
         <h2>Demandes de retrait</h2>
@@ -329,6 +321,20 @@
 </script>
 
 <script type="module" src="js/app.js"></script>
-<script type="module" src="js/tournante.js"></script>
+
+<!-- Module « Caisses tournantes » : si son chargement échoue, la cause s'affiche dans l'onglet -->
+<script type="module">
+  import('./js/tournante.js').catch(function (err) {
+    console.error('Caisses tournantes :', err);
+    var zone = document.getElementById('tab-tournantes');
+    if (!zone) return;
+    zone.innerHTML = '';
+    var p = document.createElement('p');
+    p.className = 'empty-state';
+    p.style.color = '#c0392b';
+    p.textContent = "Le module « Caisses tournantes » n'a pas pu se charger. Vérifiez que js/tournante.js et js/tournante-commun.js sont bien publiés dans ce dépôt, puis actualisez la page. Détail : " + (err && err.message ? err.message : err);
+    zone.appendChild(p);
+  });
+</script>
 </body>
 </html>
