@@ -14,6 +14,7 @@
   --radius: 14px;
 }
 * { box-sizing: border-box; }
+html, body { max-width: 100%; overflow-x: hidden; }
 body { margin: 0; font-family: var(--font-body); background: var(--ivoire); color: var(--indigo-deep); -webkit-font-smoothing: antialiased; }
 h1, h2 { font-family: var(--font-display); margin: 0; }
 .hidden { display: none !important; }
@@ -51,8 +52,9 @@ input:focus { outline: 2px solid var(--or); outline-offset: 1px; border-color: v
 .topbar .eyebrow { color: var(--or); }
 .banner-substitution { background: var(--terre-cuite); color: #fff; padding: 12px 20px; display: flex; justify-content: space-between; align-items: center; font-size: 13.5px; gap: 12px; }
 .banner-substitution .btn-ghost-sm { color: #fff; border-color: rgba(255,255,255,0.5); }
-.tabs { display: flex; gap: 4px; padding: 14px 20px 0; background: var(--ivoire); border-bottom: 1px solid var(--gris-clair); }
-.tab-btn { background: none; border: none; font-family: var(--font-body); font-weight: 600; font-size: 14px; color: var(--gris); padding: 10px 6px 12px; cursor: pointer; border-bottom: 2.5px solid transparent; margin-right: 18px; }
+.tabs { display: flex; gap: 4px; padding: 14px 20px 0; background: var(--ivoire); border-bottom: 1px solid var(--gris-clair); max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab-btn { flex: 0 0 auto; white-space: nowrap; background: none; border: none; font-family: var(--font-body); font-weight: 600; font-size: 14px; color: var(--gris); padding: 10px 6px 12px; cursor: pointer; border-bottom: 2.5px solid transparent; margin-right: 18px; }
 .tab-btn.active { color: var(--indigo-deep); border-bottom-color: var(--or); }
 .tab-panel { padding: 20px; }
 .cards-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 18px; }
@@ -107,8 +109,7 @@ input:focus { outline: 2px solid var(--or); outline-offset: 1px; border-color: v
   .topbar, .banner-substitution, .tabs, .tab-panel { padding-left: var(--gutter); padding-right: var(--gutter); }
   .topbar { align-items: center; }
   .topbar h1 { font-size: 24px; }
-  .tabs { flex-wrap: wrap; }
-  .tab-btn { white-space: nowrap; }
+  .tabs { flex-wrap: wrap; overflow-x: visible; }
   .tab-btn:hover { color: var(--indigo-deep); }
   .cards-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
   .stat-value { font-size: 22px; }
