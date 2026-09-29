@@ -416,12 +416,67 @@ function avatarImg(u, taille) {
   return `<img class="${classe}" src="${u && u.photoURL ? u.photoURL : AVATAR_DEFAUT}" alt="${u ? u.nom : ''}" />`;
 }
 
+// ==========================================================
+// --- NOUVEAU (28 sept 2026) : taux de commission PROPRES À CHAQUE
+// COLLECTEUR (convention fixée à la création de son compte, modifiable
+// ensuite par le PDG). Champs sur le document users du collecteur :
+//   taux_commission_pdg + taux_commission_collecteur (fractions, somme = 1).
+// Un collecteur sans ces champs reste sur 70/30 (comportement historique).
+// Pour ne jamais réécrire le passé, chaque versement du jour 1 peut porter
+// le taux appliqué (taux_pdg / taux_collecteur) ; sinon on retombe sur le
+// taux actuel du collecteur.
+// ==========================================================
+const TAUX_PDG_DEFAUT = 0.70;
+const TAUX_COLLECTEUR_DEFAUT = 0.30;
+
+function tauxDepuisUtilisateur(u) {
+  const p = u ? u.taux_commission_pdg : undefined;
+  const c = u ? u.taux_commission_collecteur : undefined;
+  if (typeof p === "number" && typeof c === "number" && p >= 0 && c >= 0 && Math.abs(p + c - 1) < 0.0005) {
+    return { pdg: p, collecteur: c, personnalise: true };
+  }
+  return { pdg: TAUX_PDG_DEFAUT, collecteur: TAUX_COLLECTEUR_DEFAUT, personnalise: false };
+}
+
+function tauxCollecteur(collecteurId) {
+  return tauxDepuisUtilisateur(state.users.find((u) => u.uid === collecteurId));
+}
+
+function paiementATauxFige(p) {
+  return typeof p.taux_pdg === "number" && typeof p.taux_collecteur === "number";
+}
+
+function tauxPourPaiement(p) {
+  if (paiementATauxFige(p)) return { pdg: p.taux_pdg, collecteur: p.taux_collecteur };
+  return tauxCollecteur(p.collecteur_id);
+}
+
+function partsCommissionJour1(p) {
+  const t = tauxPourPaiement(p);
+  const m = Number(p.montant || 0);
+  return { pdg: m * t.pdg, collecteur: m * t.collecteur };
+}
+
+// Répartition des frais d'inscription et des intérêts hebdo/mensuels :
+// - collecteur sans convention personnalisée → paramètres globaux (comme avant) ;
+// - sinon → la part de redistribution globale est conservée, et le reste
+//   est partagé PDG / collecteur selon la convention du collecteur.
+function repartitionFraisEtInterets(collecteurId) {
+  const t = tauxCollecteur(collecteurId);
+  if (!t.personnalise) return { ...state.parametresInterets };
+  const r = state.parametresInterets.redistribution || 0;
+  return { pdg: (1 - r) * t.pdg, collecteur: (1 - r) * t.collecteur, redistribution: r };
+}
+
+function formaterPourcent(fraction) {
+  return `${Number((fraction * 100).toFixed(1))} %`;
+}
+
 function calculerCommissionPdgParCollecteur(collecteurId) {
   const jour1Confirmes = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
   );
-  const totalJour1Confirme = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
-  const commissionPdgInscriptions = totalJour1Confirme * 0.70;
+  const commissionPdgInscriptions = jour1Confirmes.reduce((s, p) => s + partsCommissionJour1(p).pdg, 0);
 
   const fraisInscriptionPdg = state.fraisInscriptions
     .filter((f) => f.collecteur_id === collecteurId)
@@ -444,8 +499,7 @@ function calculerCommissionCollecteurPropre(collecteurId) {
   const jour1Confirmes = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1
   );
-  const totalJour1Confirme = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
-  const commissionInscriptions = totalJour1Confirme * 0.30;
+  const commissionInscriptions = jour1Confirmes.reduce((s, p) => s + partsCommissionJour1(p).collecteur, 0);
 
   const fraisInscriptionCollecteur = state.fraisInscriptions
     .filter((f) => f.collecteur_id === collecteurId)
@@ -490,7 +544,8 @@ function listerSousPrefectures(prefecture) {
   });
   return Array.from(zones).sort((a, b) => a.localeCompare(b, "fr"));
 }
-// === FIN PDG — PARTIE 1/3 ===// === PDG — PARTIE 2/3 ===
+// === FIN PDG — PARTIE 1/3 ===
+// === PDG — PARTIE 2/3 ===
 function renderCollecteurs() {
   const container = document.getElementById("liste-collecteurs");
   const { niveau, prefecture, sousPrefecture } = state.vueZone;
@@ -594,6 +649,7 @@ function renderCollecteurs() {
       const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
       const commissionGlobale = commissionPdg + commissionCollecteur;
       const soldeEpargneNet = calculerSoldeEpargneNetCollecteur(c.uid);
+      const tauxC = tauxDepuisUtilisateur(c);
 
       return `
         <div class="entity-card" data-uid="${c.uid}">
@@ -610,6 +666,7 @@ function renderCollecteurs() {
           <div class="detail-line"><span>Commission globale (100%)</span><span style="font-weight:bold;">${formatGNF(commissionGlobale)}</span></div>
           <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(commissionPdg)}</span></div>
           <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(commissionCollecteur)}</span></div>
+          <div class="detail-line"><span>Convention (PDG / collecteur)</span><span>${formaterPourcent(tauxC.pdg)} / ${formaterPourcent(tauxC.collecteur)}${tauxC.personnalise ? "" : " (par défaut)"}</span></div>
           <div class="detail-line"><span>Solde global d'épargne net</span><span>${formatGNF(soldeEpargneNet)}</span></div>
           <div class="detail-line"><span>Contrats actifs</span><span>${nbActifs}</span></div>
           <div class="detail-line"><span>Contrats inactifs</span><span style="${nbInactifs > 0 ? 'color:#c0392b; font-weight:bold;' : ''}">${nbInactifs}</span></div>
@@ -619,6 +676,7 @@ function renderCollecteurs() {
           <div class="detail-line"><span>Prêts en cours (ses membres)</span><span>${formatGNF(totalPretsEnCours)}</span></div>
           <div class="entity-actions">
             <button class="btn btn-secondary btn-sm" data-action="modifier-zone" data-uid="${c.uid}" data-nom="${c.nom}" data-prefecture="${c.prefecture || ''}" data-sous-prefecture="${c.sous_prefecture || ''}">Modifier la zone</button>
+            <button class="btn btn-secondary btn-sm" data-action="modifier-taux" data-uid="${c.uid}" data-nom="${c.nom}">Modifier le taux</button>
             <button class="btn btn-secondary btn-sm" data-action="enregistrer-versement" data-uid="${c.uid}" data-nom="${c.nom}">Enregistrer un versement</button>
             ${commissionPdg > 0 ? `<button class="btn btn-secondary btn-sm" data-action="retirer-commission-pdg" data-uid="${c.uid}" data-nom="${c.nom}" data-disponible="${commissionPdg}">Retirer ma commission</button>` : ""}
             ${c.statut !== "licencie" ? `<button class="btn btn-ghost-sm" data-action="${c.statut === 'suspendu' ? 'reactiver' : 'suspendre'}" data-uid="${c.uid}">${c.statut === 'suspendu' ? 'Lever la suspension' : 'Suspendre'}</button>` : ""}
@@ -677,6 +735,90 @@ function ouvrirModificationZone(uid, nom, prefectureActuelle, sousPrefectureActu
       console.error(err);
       notifier("Erreur : " + err.message, "erreur");
     }
+  });
+}
+
+// ==========================================================
+// --- NOUVEAU (28 sept 2026) : modification de la convention de commission
+// d'un collecteur (avenant). Ne s'applique qu'aux opérations FUTURES : avant
+// de changer le taux, les versements du jour 1 qui n'ont pas encore de taux
+// enregistré sont figés à l'ancien taux, pour que le passé ne bouge jamais.
+// ==========================================================
+function lierChampsTaux(idPdg, idCollecteur) {
+  const champPdg = document.getElementById(idPdg);
+  const champCollecteur = document.getElementById(idCollecteur);
+  if (!champPdg || !champCollecteur) return;
+  champPdg.addEventListener("input", () => {
+    const v = Number(champPdg.value);
+    if (!isNaN(v) && champPdg.value !== "") champCollecteur.value = Number((100 - v).toFixed(1));
+  });
+  champCollecteur.addEventListener("input", () => {
+    const v = Number(champCollecteur.value);
+    if (!isNaN(v) && champCollecteur.value !== "") champPdg.value = Number((100 - v).toFixed(1));
+  });
+}
+
+function ouvrirModificationTaux(uid, nom) {
+  const collecteur = state.users.find((u) => u.uid === uid);
+  const actuel = tauxDepuisUtilisateur(collecteur);
+  ouvrirModal(`
+    <h2>Convention de commission — ${nom}</h2>
+    <p class="subtitle-sm">Taux actuel : PDG <b>${formaterPourcent(actuel.pdg)}</b> / collecteur <b>${formaterPourcent(actuel.collecteur)}</b>. Le nouveau taux s'applique à tous ses types de contrat, <b>uniquement aux opérations futures</b> : les commissions déjà enregistrées ne changent pas.</p>
+    <form id="form-modifier-taux">
+      <div class="field-row">
+        <label>Part du PDG (%)</label>
+        <input type="number" name="pdg" id="taux-pdg-modif" min="0" max="100" step="0.1" value="${Number((actuel.pdg * 100).toFixed(1))}" required />
+      </div>
+      <div class="field-row">
+        <label>Part du collecteur (%)</label>
+        <input type="number" name="collecteur" id="taux-collecteur-modif" min="0" max="100" step="0.1" value="${Number((actuel.collecteur * 100).toFixed(1))}" required />
+      </div>
+      <p id="taux-modif-erreur" class="subtitle-sm" style="color:#c0392b;"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  lierChampsTaux("taux-pdg-modif", "taux-collecteur-modif");
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-modifier-taux").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const pdgPct = Number(fd.get("pdg"));
+    const collecteurPct = Number(fd.get("collecteur"));
+    const erreurZone = document.getElementById("taux-modif-erreur");
+    erreurZone.textContent = "";
+    if (Math.abs(pdgPct + collecteurPct - 100) > 0.05) {
+      erreurZone.textContent = `La somme doit faire 100% (actuellement ${(pdgPct + collecteurPct).toFixed(1)}%).`;
+      return;
+    }
+    try {
+      await modifierTauxCollecteur(uid, pdgPct / 100, collecteurPct / 100);
+      notifier("Convention de commission mise à jour.", "succes");
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+async function modifierTauxCollecteur(uid, nouveauPdg, nouveauCollecteur) {
+  const ancien = tauxCollecteur(uid);
+  const aFiger = state.payments.filter(
+    (p) => p.collecteur_id === uid && p.jour_numero === 1 && p.statut !== "annule" && !paiementATauxFige(p)
+  );
+  for (const p of aFiger) {
+    await updateDoc(doc(db, "payments", p.id), {
+      taux_pdg: ancien.pdg,
+      taux_collecteur: ancien.collecteur,
+    });
+  }
+  await updateDoc(doc(db, "users", uid), {
+    taux_commission_pdg: nouveauPdg,
+    taux_commission_collecteur: nouveauCollecteur,
+    date_maj_taux: serverTimestamp(),
   });
 }
 
@@ -804,6 +946,10 @@ document.getElementById("liste-collecteurs").addEventListener("click", async (e)
     ouvrirModificationZone(uid, nom, prefecture, btn.dataset.sousPrefecture);
     return;
   }
+  if (action === "modifier-taux") {
+    ouvrirModificationTaux(uid, nom);
+    return;
+  }
   if (action === "enregistrer-versement") {
     ouvrirVersementCollecteur(uid, nom);
     return;
@@ -852,7 +998,16 @@ async function reassignerCollectionsMembre(membreUid, nouveauCollecteurId) {
     const p = d.data();
     const estCommissionVerrouillee = p.jour_numero === 1 && p.statut === "confirme";
     if (!estCommissionVerrouillee) {
-      await updateDoc(doc(db, "payments", d.id), { collecteur_id: nouveauCollecteurId });
+      const maj = { collecteur_id: nouveauCollecteurId };
+      // --- NOUVEAU (28 sept 2026) : un jour 1 non encore confirmé qui change
+      // de collecteur passe au taux du NOUVEAU collecteur (la commission
+      // verrouillée, elle, reste chez l'ancien avec son propre taux). ---
+      if (p.jour_numero === 1) {
+        const t = tauxCollecteur(nouveauCollecteurId);
+        maj.taux_pdg = t.pdg;
+        maj.taux_collecteur = t.collecteur;
+      }
+      await updateDoc(doc(db, "payments", d.id), maj);
     }
   }
 
@@ -1134,11 +1289,11 @@ function calculerMontantDuPret(pret) {
 // exactement la logique déjà utilisée côté Collecteur (mêmes collections,
 // mêmes calculs d'intérêt et de statut) — le bouton "Rembourser prêt" du
 // tableau de bord PDG était affiché mais n'avait aucun gestionnaire.
+// --- MODIFIÉ (28 sept 2026) : le partage des intérêts suit désormais la
+// convention propre au collecteur (au lieu du 70/30 fixe).
 // ==========================================================
 const TAUX_HEBDO_PRET_PDG = 0.02;
 const TAUX_MENSUEL_PRET_DEFAUT_PDG = 0.08;
-const PART_INTERET_COLLECTEUR_PDG = 0.30;
-const PART_INTERET_PDG_PDG = 0.70;
 
 function nbSemainesEntameesPdg(pret) {
   const dateDebut = pret.date_debut && pret.date_debut.toDate ? pret.date_debut.toDate() : new Date();
@@ -1209,7 +1364,7 @@ async function enregistrerRemboursementPdg(pret, montant, montantDuAvant) {
 
   if (interetReconnuMaintenant > 0) {
     if (typeContrat === "hebdomadaire" || typeContrat === "mensuel") {
-      const { pdg, collecteur, redistribution } = state.parametresInterets;
+      const { pdg, collecteur, redistribution } = repartitionFraisEtInterets(pret.collecteur_id);
       const montantPdg = interetReconnuMaintenant * pdg;
       const montantCollecteur = interetReconnuMaintenant * collecteur;
       const montantRedistribution = interetReconnuMaintenant * redistribution;
@@ -1223,8 +1378,9 @@ async function enregistrerRemboursementPdg(pret, montant, montantDuAvant) {
         date: serverTimestamp(),
       });
     } else {
-      const montantCollecteur = interetReconnuMaintenant * PART_INTERET_COLLECTEUR_PDG;
-      const montantPdg = interetReconnuMaintenant * PART_INTERET_PDG_PDG;
+      const t = tauxCollecteur(pret.collecteur_id);
+      const montantCollecteur = interetReconnuMaintenant * t.collecteur;
+      const montantPdg = interetReconnuMaintenant * t.pdg;
       await addDoc(collection(db, "interets_prets_repartis"), {
         pret_id: pret.id,
         membre_id: pret.membre_id,
@@ -1440,6 +1596,10 @@ document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () =
       const contratRef = await addDoc(collection(db, "contracts"), contratData);
 
       if (typeContrat === "journalier") {
+        // --- MODIFIÉ (28 sept 2026) : le taux du collecteur est enregistré
+        // sur le versement du jour 1 (commission), pour figer la convention
+        // en vigueur ce jour-là. ---
+        const tCollecteur = tauxCollecteur(collecteurId);
         await addDoc(collection(db, "payments"), {
           contract_id: contratRef.id,
           collecteur_id: collecteurId,
@@ -1447,16 +1607,21 @@ document.getElementById("btn-nouveau-membre-pdg").addEventListener("click", () =
           montant: commission,
           jour_numero: 1,
           statut: "collecte",
+          taux_pdg: tCollecteur.pdg,
+          taux_collecteur: tCollecteur.collecteur,
           date: serverTimestamp(),
         });
       } else if (fraisInscription > 0) {
+        // --- MODIFIÉ (28 sept 2026) : partage des frais selon la convention
+        // du collecteur. ---
+        const repartition = repartitionFraisEtInterets(collecteurId);
         await addDoc(collection(db, "frais_inscription"), {
           contract_id: contratRef.id,
           membre_id: uid,
           collecteur_id: collecteurId,
           montant_total: fraisInscription,
-          montant_pdg: fraisInscription * state.parametresInterets.pdg,
-          montant_collecteur: fraisInscription * state.parametresInterets.collecteur,
+          montant_pdg: fraisInscription * repartition.pdg,
+          montant_collecteur: fraisInscription * repartition.collecteur,
           date: serverTimestamp(),
         });
       }
@@ -1762,7 +1927,8 @@ function ouvrirModalConfirmation(titre, texte, onConfirm) {
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
   document.getElementById("modal-confirmer").addEventListener("click", onConfirm);
 }
-// === FIN PDG — PARTIE 2/3 ===// === PDG — PARTIE 3/3 ===
+// === FIN PDG — PARTIE 2/3 ===
+// === PDG — PARTIE 3/3 ===
 document.getElementById("btn-decaisser").addEventListener("click", () => {
   const { totalCommissions } = calculerSoldes(state.payments, state.contracts);
   const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
@@ -1807,24 +1973,228 @@ document.getElementById("btn-nouveau-partenaire").addEventListener("click", () =
       <button class="btn btn-secondary" id="btn-code-collecteur" style="flex:1;">Nouveau collecteur</button>
     </div>
   `);
-  document.getElementById("btn-code-collecteur").addEventListener("click", () => genererEtAfficherCode("collecteur"));
+  document.getElementById("btn-code-collecteur").addEventListener("click", ouvrirCreationCollecteur);
 });
 
-document.getElementById("btn-nouveau-collecteur").addEventListener("click", () => genererEtAfficherCode("collecteur"));
+document.getElementById("btn-nouveau-collecteur").addEventListener("click", ouvrirCreationCollecteur);
 
-async function genererEtAfficherCode(type) {
+// ==========================================================
+// --- NOUVEAU (28 sept 2026) : la convention de commission du collecteur
+// (part PDG / part collecteur) est fixée AVANT de générer son code
+// d'invitation. Elle est enregistrée sur le code (taux_commission_pdg /
+// taux_commission_collecteur) et doit être recopiée sur le document users
+// du collecteur lors de son inscription dans l'application Collecteur.
+// Le PDG peut aussi la définir/modifier ensuite depuis la carte du
+// collecteur ("Modifier le taux").
+// ==========================================================
+function ouvrirCreationCollecteur() {
+  ouvrirModal(`
+    <h2>Nouveau collecteur</h2>
+    <p class="subtitle-sm">Fixez la convention de commission de ce collecteur. Elle s'appliquera à tous ses types de contrat. Vous pourrez la modifier plus tard (uniquement pour les opérations futures).</p>
+    <form id="form-creation-collecteur">
+      <div class="field-row">
+        <label>Part du PDG (%)</label>
+        <input type="number" name="pdg" id="taux-pdg-creation" min="0" max="100" step="0.1" value="70" required />
+      </div>
+      <div class="field-row">
+        <label>Part du collecteur (%)</label>
+        <input type="number" name="collecteur" id="taux-collecteur-creation" min="0" max="100" step="0.1" value="30" required />
+      </div>
+      <p id="taux-creation-erreur" class="subtitle-sm" style="color:#c0392b;"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Générer le code</button>
+      </div>
+    </form>
+  `);
+  lierChampsTaux("taux-pdg-creation", "taux-collecteur-creation");
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-creation-collecteur").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const pdgPct = Number(fd.get("pdg"));
+    const collecteurPct = Number(fd.get("collecteur"));
+    const erreurZone = document.getElementById("taux-creation-erreur");
+    erreurZone.textContent = "";
+    if (Math.abs(pdgPct + collecteurPct - 100) > 0.05) {
+      erreurZone.textContent = `La somme doit faire 100% (actuellement ${(pdgPct + collecteurPct).toFixed(1)}%).`;
+      return;
+    }
+    try {
+      await genererEtAfficherCode("collecteur", { pdg: pdgPct / 100, collecteur: collecteurPct / 100 });
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+async function genererEtAfficherCode(type, taux) {
   const prefixe = type === "collecteur" ? "COL" : "MBR";
   const code = genererCodeParrain(prefixe);
-  await setDoc(doc(db, "codes_parrainage", code), {
+  const donneesCode = {
     proprietaire_id: state.currentUser.uid,
     type,
     actif: true,
     date_creation: serverTimestamp(),
-  });
+  };
+  if (taux) {
+    donneesCode.taux_commission_pdg = taux.pdg;
+    donneesCode.taux_commission_collecteur = taux.collecteur;
+  }
+  await setDoc(doc(db, "codes_parrainage", code), donneesCode);
   ouvrirModal(`
     <h2>Code généré</h2>
     <p class="subtitle-sm">Transmettez ce code au futur ${type === "collecteur" ? "collecteur" : "membre"}. Il devra le saisir lors de son inscription.</p>
     <div class="code-display">${code}</div>
+    ${taux ? `<p class="subtitle-sm" style="margin-top:10px;">Convention de commission : PDG <b>${formaterPourcent(taux.pdg)}</b> / collecteur <b>${formaterPourcent(taux.collecteur)}</b></p>` : ""}
+    <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-code" style="flex:1;">Terminé</button></div>
+  `);
+  document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
+}
+
+function estVerrouillable(payment) {
+  if (!payment.date || !payment.date.toDate) return false;
+  const dateMs = payment.date.toDate().getTime();
+  return (Date.now() - dateMs) >= 24 * 60 * 60 * 1000;
+}
+
+function heuresRestantesAvantVerrouillage(payment) {
+  if (!payment.date || !payment.date.toDate) return null;
+  const dateMs = payment.date.toDate().getTime();
+  const restant = 24 * 60 * 60 * 1000 - (Date.now() - dateMs);
+  return restant > 0 ? Math.ceil(restant / (60 * 60 * 1000)) : 0;
+}
+
+let verrouillageAutoEnCours = false;
+async function verrouillerAutomatiquement() {
+  if (verrouillageAutoEnCours) return;
+  const aVerrouiller = state.payments.filter((p) => p.statut === "collecte" && estVerrouillable(p));
+  if (aVerrouiller.length === 0) return;
+  verrouillageAutoEnCours = true;
+  try {
+    for (const p of aVerrouiller) {
+      await updateDoc(doc(db, "payments", p.id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.error("Erreur verrouillage automatique :", err);
+  } finally {
+    verrouillageAutoEnCours = false;
+  }
+}
+
+function renderConfirmations() {
+  const container = document.getElementById("liste-confirmations");
+  if (!container) return;
+
+  const enAttente = state.payments.filter((p) => p.statut === "collecte");
+  const enVerification = enAttente.filter((p) => !estVerrouillable(p));
+  const pretsAConfirmer = enAttente.filter((p) => estVerrouillable(p));
+  const verrouilles = state.payments
+    .filter((p) => p.statut === "confirme")
+    .sort((a, b) => {
+      const da = a.date && a.date.toDate ? a.date.toDate() : new Date(0);
+      const dbb = b.date && b.date.toDate ? b.date.toDate() : new Date(0);
+      return dbb - da;
+    })
+    .slice(0, 100);
+
+  let html = "";
+
+  html += `<h3 style="font-size:14px; margin-bottom:8px;">En période de vérification (moins de 24h)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Déjà comptés dans le solde du membre. Vous pouvez encore annuler en cas d'erreur signalée par le collecteur.</p>`;
+  if (enVerification.length === 0) {
+    html += `<p class="empty-state">Aucun versement en période de vérification.</p>`;
+  } else {
+    html += enVerification.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      const h = heuresRestantesAvantVerrouillage(p);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+              <p class="entity-sub">Verrouillable dans ${h !== null ? h + "h" : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+// ==========================================================
+// --- NOUVEAU (28 sept 2026) : la convention de commission du collecteur
+// (part PDG / part collecteur) est fixée AVANT de générer son code
+// d'invitation. Elle est enregistrée sur le code (taux_commission_pdg /
+// taux_commission_collecteur) et doit être recopiée sur le document users
+// du collecteur lors de son inscription dans l'application Collecteur.
+// Le PDG peut aussi la définir/modifier ensuite depuis la carte du
+// collecteur ("Modifier le taux").
+// ==========================================================
+function ouvrirCreationCollecteur() {
+  ouvrirModal(`
+    <h2>Nouveau collecteur</h2>
+    <p class="subtitle-sm">Fixez la convention de commission de ce collecteur. Elle s'appliquera à tous ses types de contrat. Vous pourrez la modifier plus tard (uniquement pour les opérations futures).</p>
+    <form id="form-creation-collecteur">
+      <div class="field-row">
+        <label>Part du PDG (%)</label>
+        <input type="number" name="pdg" id="taux-pdg-creation" min="0" max="100" step="0.1" value="70" required />
+      </div>
+      <div class="field-row">
+        <label>Part du collecteur (%)</label>
+        <input type="number" name="collecteur" id="taux-collecteur-creation" min="0" max="100" step="0.1" value="30" required />
+      </div>
+      <p id="taux-creation-erreur" class="subtitle-sm" style="color:#c0392b;"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Générer le code</button>
+      </div>
+    </form>
+  `);
+  lierChampsTaux("taux-pdg-creation", "taux-collecteur-creation");
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-creation-collecteur").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const pdgPct = Number(fd.get("pdg"));
+    const collecteurPct = Number(fd.get("collecteur"));
+    const erreurZone = document.getElementById("taux-creation-erreur");
+    erreurZone.textContent = "";
+    if (Math.abs(pdgPct + collecteurPct - 100) > 0.05) {
+      erreurZone.textContent = `La somme doit faire 100% (actuellement ${(pdgPct + collecteurPct).toFixed(1)}%).`;
+      return;
+    }
+    try {
+      await genererEtAfficherCode("collecteur", { pdg: pdgPct / 100, collecteur: collecteurPct / 100 });
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+async function genererEtAfficherCode(type, taux) {
+  const prefixe = type === "collecteur" ? "COL" : "MBR";
+  const code = genererCodeParrain(prefixe);
+  const donneesCode = {
+    proprietaire_id: state.currentUser.uid,
+    type,
+    actif: true,
+    date_creation: serverTimestamp(),
+  };
+  if (taux) {
+    donneesCode.taux_commission_pdg = taux.pdg;
+    donneesCode.taux_commission_collecteur = taux.collecteur;
+  }
+  await setDoc(doc(db, "codes_parrainage", code), donneesCode);
+  ouvrirModal(`
+    <h2>Code généré</h2>
+    <p class="subtitle-sm">Transmettez ce code au futur ${type === "collecteur" ? "collecteur" : "membre"}. Il devra le saisir lors de son inscription.</p>
+    <div class="code-display">${code}</div>
+    ${taux ? `<p class="subtitle-sm" style="margin-top:10px;">Convention de commission : PDG <b>${formaterPourcent(taux.pdg)}</b> / collecteur <b>${formaterPourcent(taux.collecteur)}</b></p>` : ""}
     <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-code" style="flex:1;">Terminé</button></div>
   `);
   document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
@@ -2376,12 +2746,13 @@ function calculerChiffresParType(typeContratCle) {
   let commissionCollecteur = 0;
 
   if (typeContratCle === "journalier") {
+    // --- MODIFIÉ (28 sept 2026) : commission du jour 1 calculée avec le taux
+    // de chaque collecteur (taux figé sur le versement, sinon taux actuel). ---
     const jour1Confirmes = state.payments.filter(
       (p) => p.statut === "confirme" && p.jour_numero === 1 && contratIds.has(p.contract_id)
     );
-    const totalJour1 = jour1Confirmes.reduce((s, p) => s + Number(p.montant || 0), 0);
-    commissionPdg = totalJour1 * 0.70;
-    commissionCollecteur = totalJour1 * 0.30;
+    commissionPdg = jour1Confirmes.reduce((s, p) => s + partsCommissionJour1(p).pdg, 0);
+    commissionCollecteur = jour1Confirmes.reduce((s, p) => s + partsCommissionJour1(p).collecteur, 0);
     const interets = state.interetsPartages.filter((i) => {
       const pret = state.prets.find((p) => p.id === i.pret_id);
       return pret && (pret.type_contrat || "journalier") === "journalier";
@@ -2485,13 +2856,14 @@ function dateDansPeriode(champDate, debut, fin) {
 }
 
 function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
+  // --- MODIFIÉ (28 sept 2026) : commission du jour 1 avec le taux du
+  // collecteur (figé sur le versement, sinon taux actuel). ---
   const jour1Periode = state.payments.filter(
     (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1 &&
       dateDansPeriode(p.date_confirmation || p.date, debut, fin)
   );
-  const totalJour1Periode = jour1Periode.reduce((s, p) => s + Number(p.montant || 0), 0);
-  const commissionPdgInscriptions = totalJour1Periode * 0.70;
-  const commissionCollecteurInscriptions = totalJour1Periode * 0.30;
+  const commissionPdgInscriptions = jour1Periode.reduce((s, p) => s + partsCommissionJour1(p).pdg, 0);
+  const commissionCollecteurInscriptions = jour1Periode.reduce((s, p) => s + partsCommissionJour1(p).collecteur, 0);
 
   const fraisPeriode = state.fraisInscriptions.filter(
     (f) => f.collecteur_id === collecteurId && dateDansPeriode(f.date, debut, fin)
