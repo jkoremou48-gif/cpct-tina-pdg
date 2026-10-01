@@ -1995,4 +1995,1659 @@ function ouvrirModalConfirmation(titre, texte, onConfirm) {
   document.getElementById("modal-annuler").addEventListener("click", fermerModal);
   document.getElementById("modal-confirmer").addEventListener("click", onConfirm);
 }
-// === FIN PDG — PARTIE 2/3 ===
+// === FIN PDG — PARTIE 2/3 ===// === PDG — PARTIE 3/3 ===
+document.getElementById("btn-decaisser").addEventListener("click", () => {
+  const { totalCommissions } = calculerSoldes(state.payments, state.contracts);
+  const totalDecaisse = (state.decaissements || []).reduce((s, d) => s + Number(d.montant), 0);
+  const totalInteretsPdg = state.interetsPartages.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const totalFraisInscriptionPdg = state.fraisInscriptions.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+  const totalRetraitsCommissionPdg = state.retraitsCommission
+    .filter((r) => r.beneficiaire_role === "pdg" && r.statut === "confirme")
+    .reduce((s, r) => s + Number(r.montant || 0), 0);
+  const disponible = totalCommissions + totalInteretsPdg + totalFraisInscriptionPdg - totalDecaisse - totalRetraitsCommissionPdg;
+  ouvrirModal(`
+    <h2>Décaisser des commissions</h2>
+    <p class="subtitle-sm">Montant disponible : <b>${formatGNF(disponible)}</b></p>
+    <form id="form-decaisser">
+      <div class="field-row">
+        <label>Montant à décaisser (GNF)</label>
+        <input type="number" name="montant" min="1" max="${disponible}" required />
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Confirmer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-decaisser").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const montant = Number(new FormData(e.target).get("montant"));
+    if (montant > disponible) { notifier("Montant supérieur au solde disponible.", "erreur"); return; }
+    await addDoc(collection(db, "decaissements"), {
+      montant, pdg_id: state.currentUser.uid, date: new Date().toISOString(),
+    });
+    notifier("Décaissement enregistré.", "succes");
+    fermerModal();
+  });
+});
+
+document.getElementById("btn-nouveau-partenaire").addEventListener("click", () => {
+  ouvrirModal(`
+    <h2>Créer un nouveau partenaire</h2>
+    <p class="subtitle-sm">Choisissez le type de compte à inviter. Un code sera généré : transmettez-le à la personne pour qu'elle finalise son inscription sur l'application correspondante.</p>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-code-collecteur" style="flex:1;">Nouveau collecteur</button>
+    </div>
+  `);
+  document.getElementById("btn-code-collecteur").addEventListener("click", ouvrirCreationCollecteur);
+});
+
+document.getElementById("btn-nouveau-collecteur").addEventListener("click", ouvrirCreationCollecteur);
+
+// ==========================================================
+// --- NOUVEAU (28 sept 2026) : la convention de commission du collecteur
+// (part PDG / part collecteur) est fixée AVANT de générer son code
+// d'invitation. Elle est enregistrée sur le code (taux_commission_pdg /
+// taux_commission_collecteur) et doit être recopiée sur le document users
+// du collecteur lors de son inscription dans l'application Collecteur.
+// Le PDG peut aussi la définir/modifier ensuite depuis la carte du
+// collecteur ("Modifier le taux").
+// ==========================================================
+function ouvrirCreationCollecteur() {
+  ouvrirModal(`
+    <h2>Nouveau collecteur</h2>
+    <p class="subtitle-sm">Fixez la convention de commission de ce collecteur. Elle s'appliquera à tous ses types de contrat. Vous pourrez la modifier plus tard (uniquement pour les opérations futures).</p>
+    <form id="form-creation-collecteur">
+      <div class="field-row">
+        <label>Part du PDG (%)</label>
+        <input type="number" name="pdg" id="taux-pdg-creation" min="0" max="100" step="0.1" value="70" required />
+      </div>
+      <div class="field-row">
+        <label>Part du collecteur (%)</label>
+        <input type="number" name="collecteur" id="taux-collecteur-creation" min="0" max="100" step="0.1" value="30" required />
+      </div>
+      <div class="field-row">
+        <label>Type de collecteur</label>
+        <select name="statut_agence" required>
+          <option value="ORDINAIRE" selected>ORDINAIRE</option>
+          <option value="AGENCE_BANQUE">AGENCE BANQUE (agence CP-PAS)</option>
+        </select>
+      </div>
+      <p id="taux-creation-erreur" class="subtitle-sm" style="color:#c0392b;"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Générer le code</button>
+      </div>
+    </form>
+  `);
+  lierChampsTaux("taux-pdg-creation", "taux-collecteur-creation");
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-creation-collecteur").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const pdgPct = Number(fd.get("pdg"));
+    const collecteurPct = Number(fd.get("collecteur"));
+    const erreurZone = document.getElementById("taux-creation-erreur");
+    erreurZone.textContent = "";
+    if (Math.abs(pdgPct + collecteurPct - 100) > 0.05) {
+      erreurZone.textContent = `La somme doit faire 100% (actuellement ${(pdgPct + collecteurPct).toFixed(1)}%).`;
+      return;
+    }
+    try {
+      await genererEtAfficherCode("collecteur", { pdg: pdgPct / 100, collecteur: collecteurPct / 100 }, fd.get("statut_agence"));
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+async function genererEtAfficherCode(type, taux, statutAgence) {
+  const prefixe = type === "collecteur" ? "COL" : "MBR";
+  const code = genererCodeParrain(prefixe);
+  const donneesCode = {
+    proprietaire_id: state.currentUser.uid,
+    type,
+    actif: true,
+    date_creation: serverTimestamp(),
+  };
+  if (taux) {
+    donneesCode.taux_commission_pdg = taux.pdg;
+    donneesCode.taux_commission_collecteur = taux.collecteur;
+  }
+  if (type === "collecteur") {
+    donneesCode.statut_agence = statutAgence === "AGENCE_BANQUE" ? "AGENCE_BANQUE" : "ORDINAIRE";
+  }
+  await setDoc(doc(db, "codes_parrainage", code), donneesCode);
+  ouvrirModal(`
+    <h2>Code généré</h2>
+    <p class="subtitle-sm">Transmettez ce code au futur ${type === "collecteur" ? "collecteur" : "membre"}. Il devra le saisir lors de son inscription.</p>
+    <div class="code-display">${code}</div>
+    ${taux ? `<p class="subtitle-sm" style="margin-top:10px;">Convention de commission : PDG <b>${formaterPourcent(taux.pdg)}</b> / collecteur <b>${formaterPourcent(taux.collecteur)}</b></p>` : ""}
+    ${type === "collecteur" ? `<p class="subtitle-sm" style="margin-top:6px;">Type : <b>${statutAgence === "AGENCE_BANQUE" ? "Agence CP-PAS" : "Ordinaire"}</b></p>` : ""}
+    <div class="modal-actions"><button class="btn btn-primary" id="modal-fermer-code" style="flex:1;">Terminé</button></div>
+  `);
+  document.getElementById("modal-fermer-code").addEventListener("click", fermerModal);
+}
+
+function estVerrouillable(payment) {
+  if (!payment.date || !payment.date.toDate) return false;
+  const dateMs = payment.date.toDate().getTime();
+  return (Date.now() - dateMs) >= 24 * 60 * 60 * 1000;
+}
+
+function heuresRestantesAvantVerrouillage(payment) {
+  if (!payment.date || !payment.date.toDate) return null;
+  const dateMs = payment.date.toDate().getTime();
+  const restant = 24 * 60 * 60 * 1000 - (Date.now() - dateMs);
+  return restant > 0 ? Math.ceil(restant / (60 * 60 * 1000)) : 0;
+}
+
+let verrouillageAutoEnCours = false;
+async function verrouillerAutomatiquement() {
+  if (verrouillageAutoEnCours) return;
+  const aVerrouiller = state.payments.filter((p) => p.statut === "collecte" && estVerrouillable(p));
+  if (aVerrouiller.length === 0) return;
+  verrouillageAutoEnCours = true;
+  try {
+    for (const p of aVerrouiller) {
+      await updateDoc(doc(db, "payments", p.id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.error("Erreur verrouillage automatique :", err);
+  } finally {
+    verrouillageAutoEnCours = false;
+  }
+}
+
+function renderConfirmations() {
+  const container = document.getElementById("liste-confirmations");
+  if (!container) return;
+
+  const enAttente = state.payments.filter((p) => p.statut === "collecte");
+  const enVerification = enAttente.filter((p) => !estVerrouillable(p));
+  const pretsAConfirmer = enAttente.filter((p) => estVerrouillable(p));
+  const verrouilles = state.payments
+    .filter((p) => p.statut === "confirme")
+    .sort((a, b) => {
+      const da = a.date && a.date.toDate ? a.date.toDate() : new Date(0);
+      const dbb = b.date && b.date.toDate ? b.date.toDate() : new Date(0);
+      return dbb - da;
+    })
+    .slice(0, 100);
+
+  let html = "";
+
+  html += `<h3 style="font-size:14px; margin-bottom:8px;">En période de vérification (moins de 24h)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Déjà comptés dans le solde du membre. Vous pouvez encore annuler en cas d'erreur signalée par le collecteur.</p>`;
+  if (enVerification.length === 0) {
+    html += `<p class="empty-state">Aucun versement en période de vérification.</p>`;
+  } else {
+    html += enVerification.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      const h = heuresRestantesAvantVerrouillage(p);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+              <p class="entity-sub">Verrouillable dans ${h !== null ? h + "h" : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Prêts à verrouiller (24h écoulées)</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Ceux-ci se verrouillent automatiquement au prochain rafraîchissement ; le bouton reste utile pour forcer le verrouillage immédiatement.</p>`;
+  if (pretsAConfirmer.length === 0) {
+    html += `<p class="empty-state">Aucun versement prêt à verrouiller.</p>`;
+  } else {
+    html += pretsAConfirmer.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"}</p>
+            </div>
+            <span class="badge badge-suspendu">${formatGNF(p.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-encaissement" data-id="${p.id}">Annuler</button>
+            <button class="btn btn-primary btn-sm" data-action="confirmer" data-id="${p.id}">Verrouiller (Confirmer)</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique verrouillé</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Ces opérations sont définitives et ne peuvent plus être annulées.</p>`;
+  if (verrouilles.length === 0) {
+    html += `<p class="empty-state">Aucun encaissement verrouillé pour le moment.</p>`;
+  } else {
+    html += verrouilles.map((p) => {
+      const membre = state.users.find((u) => u.uid === p.membre_id);
+      const collecteur = state.users.find((u) => u.uid === p.collecteur_id);
+      return `
+        <div class="entity-card" data-id="${p.id}">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : "Membre inconnu"}</p>
+              <p class="entity-sub">Jour ${p.jour_numero} · collecté par ${collecteur ? collecteur.nom : "—"} · ${formatDate(p.date)}</p>
+            </div>
+            <span class="badge badge-actif">${formatGNF(p.montant)}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  container.innerHTML = html;
+}
+
+document.getElementById("liste-confirmations")?.addEventListener("click", async (e) => {
+  const btnConfirmer = e.target.closest("button[data-action='confirmer']");
+  if (btnConfirmer) {
+    const id = btnConfirmer.dataset.id;
+    try {
+      await updateDoc(doc(db, "payments", id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+      notifier("Versement verrouillé (confirmé).", "succes");
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+    return;
+  }
+
+  const btnAnnuler = e.target.closest("button[data-action='annuler-encaissement']");
+  if (btnAnnuler) {
+    const id = btnAnnuler.dataset.id;
+    const payment = state.payments.find((p) => p.id === id);
+    if (!payment) return;
+    ouvrirModalConfirmation(
+      "Annuler cet encaissement ?",
+      `Montant : ${formatGNF(payment.montant)} · Jour ${payment.jour_numero}. Le solde du membre sera immédiatement rétrogradé.`,
+      async () => {
+        try {
+          await annulerEncaissement(payment);
+          notifier("Encaissement annulé.", "succes");
+          fermerModal();
+        } catch (err) {
+          console.error(err);
+          notifier("Erreur : " + err.message, "erreur");
+        }
+      }
+    );
+  }
+});
+
+async function annulerEncaissement(payment) {
+  await updateDoc(doc(db, "payments", payment.id), {
+    statut: "annule",
+    date_annulation: serverTimestamp(),
+    annule_par: state.currentUser.uid,
+  });
+  if (payment.jour_numero >= 31 && payment.contract_id) {
+    await updateDoc(doc(db, "contracts", payment.contract_id), { statut: "actif" });
+  }
+}
+
+function infoTypeRetrait(type) {
+  const infos = {
+    'pret': { libelle: 'Prêt', classe: 'badge-suspendu', actionLabel: 'Valider comme prêt' },
+    'solde_contrat_termine': { libelle: 'Solde de contrat terminé', classe: 'badge-actif', actionLabel: 'Confirmer' },
+    'retrait_final': { libelle: 'Retrait final (clôture)', classe: 'badge-licencie', actionLabel: 'Confirmer' },
+  };
+  return infos[type] || { libelle: 'Retrait d\'épargne', classe: 'badge-actif', actionLabel: 'Confirmer' };
+}
+
+function renderRetraits() {
+  const container = document.getElementById("liste-retraits");
+  if (!container) return;
+
+  const demandesCommission = state.retraitsCommission.filter(
+    (r) => r.beneficiaire_role === "collecteur" && r.statut === "en_attente"
+  );
+
+  let html = "";
+
+  if (demandesCommission.length > 0) {
+    html += `<h3 style="font-size:14px; margin-bottom:8px;">Demandes de retrait de commission (collecteurs)</h3>`;
+    html += demandesCommission.map((r) => `
+      <div class="entity-card" data-id="${r.id}" data-kind="commission">
+        <div class="entity-card-top">
+          <div>
+            <p class="entity-nom">${r.collecteur_nom || "Collecteur"}</p>
+            <p class="entity-sub">Retrait de sa commission (collecteur)</p>
+          </div>
+          <span class="badge badge-suspendu">${formatGNF(r.montant)}</span>
+        </div>
+        <div class="entity-actions">
+          <button class="btn btn-primary btn-sm" data-action="confirmer-retrait-commission" data-id="${r.id}">Confirmer</button>
+        </div>
+      </div>
+    `).join("");
+  }
+
+  if (state.retraits.length > 0) {
+    html += `<h3 style="font-size:14px; margin:16px 0 8px;">En attente de traitement par le collecteur</h3>
+      <p class="subtitle-sm" style="margin-bottom:10px;">Ces demandes sont désormais confirmées ou annulées directement par le collecteur du membre.</p>`;
+    html += state.retraits.map((r) => {
+      const membre = state.users.find((u) => u.uid === r.memberId);
+      const info = infoTypeRetrait(r.type);
+      return `
+        <div class="entity-card" data-id="${r.id}" data-kind="retrait-info">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
+              <p class="entity-sub">${info.libelle}</p>
+            </div>
+            <span class="badge ${info.classe}">${formatGNF(r.montant)}</span>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  html += `<h3 style="font-size:14px; margin:16px 0 8px;">Historique des retraits confirmés</h3>
+    <p class="subtitle-sm" style="margin-bottom:10px;">Vous pouvez annuler un retrait en cas d'erreur.</p>`;
+  if (state.retraitsConfirmes.length === 0) {
+    html += `<p class="empty-state">Aucun retrait confirmé pour le moment.</p>`;
+  } else {
+    html += state.retraitsConfirmes.map((r) => {
+      const membre = state.users.find((u) => u.uid === r.memberId);
+      const info = infoTypeRetrait(r.type);
+      return `
+        <div class="entity-card" data-id="${r.id}" data-kind="retrait-confirme">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${membre ? membre.nom : r.memberName || "Membre inconnu"}</p>
+              <p class="entity-sub">${info.libelle}</p>
+            </div>
+            <span class="badge badge-actif">${formatGNF(r.montant)}</span>
+          </div>
+          <div class="entity-actions">
+            <button class="btn btn-danger btn-sm" data-action="annuler-retrait" data-id="${r.id}">Annuler</button>
+          </div>
+        </div>
+      `;
+    }).join("");
+  }
+
+  if (demandesCommission.length === 0 && state.retraits.length === 0 && state.retraitsConfirmes.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune demande de retrait pour le moment.</p>`;
+    return;
+  }
+
+  container.innerHTML = html;
+}
+
+document.getElementById("liste-retraits")?.addEventListener("click", async (e) => {
+  const btnCommission = e.target.closest("button[data-action='confirmer-retrait-commission']");
+  if (btnCommission) {
+    const id = btnCommission.dataset.id;
+    try {
+      await updateDoc(doc(db, "retraits_commission", id), {
+        statut: "confirme",
+        date_confirmation: serverTimestamp(),
+      });
+      notifier("Retrait de commission confirmé.", "succes");
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+    return;
+  }
+
+  const btnAnnuler = e.target.closest("button[data-action='annuler-retrait']");
+  if (btnAnnuler) {
+    const id = btnAnnuler.dataset.id;
+    const retrait = state.retraitsConfirmes.find((r) => r.id === id);
+    if (!retrait) return;
+    const info = infoTypeRetrait(retrait.type);
+    ouvrirModalConfirmation(
+      "Annuler ce retrait ?",
+      `Montant : ${formatGNF(retrait.montant)} · Type : ${info.libelle}. Cette action tente de rétablir la situation précédente (contrat, prêt).`,
+      async () => {
+        try {
+          await annulerRetrait(retrait);
+          notifier("Retrait annulé.", "succes");
+          fermerModal();
+        } catch (err) {
+          console.error(err);
+          notifier("Erreur : " + err.message, "erreur");
+        }
+      }
+    );
+  }
+});
+
+async function annulerRetrait(retrait) {
+  await updateDoc(doc(db, "withdrawalRequests", retrait.id), {
+    statut: "annule",
+    date_annulation: serverTimestamp(),
+    annule_par: state.currentUser.uid,
+  });
+
+  if (retrait.type === "pret") {
+    const pretAssocie = state.prets.find(
+      (p) => p.membre_id === retrait.memberId && p.contract_id === retrait.contractId && p.statut === "actif"
+    );
+    if (pretAssocie) {
+      await updateDoc(doc(db, "prets", pretAssocie.id), { statut: "annule" });
+    }
+  } else if (retrait.type === "retrait_final") {
+    if (retrait.contractId) {
+      await updateDoc(doc(db, "contracts", retrait.contractId), {
+        statut: "actif",
+        epargne_soldee: false,
+      });
+    }
+    const propositionsSnap = await getDocs(
+      query(collection(db, "propositions_reconduction"), where("contrat_precedent_id", "==", retrait.contractId || "__none__"))
+    );
+    for (const d of propositionsSnap.docs) {
+      if (d.data().statut === "en_attente") {
+        await deleteDoc(doc(db, "propositions_reconduction", d.id));
+      }
+    }
+  } else {
+    const contratsASolder = state.contracts.filter(
+      (c) => c.membre_id === retrait.memberId && c.statut === "cloture" && c.epargne_soldee
+    );
+    for (const c of contratsASolder) {
+      await updateDoc(doc(db, "contracts", c.id), { epargne_soldee: false });
+    }
+  }
+}
+
+document.getElementById("form-diffusion")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const groupe = fd.get("groupe");
+  const contenu = fd.get("contenu").trim();
+  if (!contenu) return;
+
+  try {
+    await addDoc(collection(db, "diffusions"), {
+      expediteur_id: state.currentUser.uid,
+      expediteur_nom: state.currentUser.nom,
+      groupe_cible: groupe,
+      contenu,
+      date: serverTimestamp(),
+    });
+    notifier(`Message diffusé à tous les ${groupe === "collecteurs" ? "collecteurs" : "membres"}.`, "succes");
+    e.target.reset();
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur : " + err.message, "erreur");
+  }
+});
+
+document.getElementById("titre-historique-diffusions")?.addEventListener("click", () => {
+  const titre = document.getElementById("titre-historique-diffusions");
+  const zone = document.getElementById("liste-diffusions");
+  zone.classList.toggle("hidden");
+  titre.classList.toggle("ouvert");
+});
+
+function renderCommunication() {
+  renderDiffusions();
+  renderMessagerie();
+  mettreAJourBoutonCommunicationPdg();
+}
+
+function mettreAJourBoutonCommunicationPdg() {
+  const totalNonLus = state.messagesPrives.filter(
+    (m) => m.expediteur_role !== "pdg" && m.lu_pdg === false
+  ).length;
+  const btnTab = document.querySelector('.tab-btn[data-tab="communication"]');
+  if (btnTab) {
+    btnTab.style.background = totalNonLus > 0 ? "#198754" : "";
+    btnTab.style.color = totalNonLus > 0 ? "white" : "";
+  }
+}
+
+function renderDiffusions() {
+  const container = document.getElementById("liste-diffusions");
+  if (!container) return;
+
+  const diffusionsTriees = [...state.diffusions].sort(
+    (a, b) => (b.date?.toMillis?.() || 0) - (a.date?.toMillis?.() || 0)
+  );
+
+  if (diffusionsTriees.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune diffusion envoyée pour le moment.</p>`;
+    return;
+  }
+
+  container.innerHTML = diffusionsTriees.map((d) => `
+    <div class="entity-card">
+      <div class="entity-card-top">
+        <p class="entity-nom">${d.groupe_cible === "collecteurs" ? "→ Tous les collecteurs" : "→ Tous les membres"}</p>
+        <span class="entity-sub">${formatDateHeure(d.date)}</span>
+      </div>
+      <p style="margin-top:6px; font-size:14px;">${d.contenu}</p>
+    </div>
+  `).join("");
+}
+
+function renderMessagerie() {
+  const container = document.getElementById("liste-messagerie");
+  if (!container) return;
+
+  const conversations = {};
+  state.messagesPrives.forEach((m) => {
+    if (!conversations[m.participant_id]) {
+      conversations[m.participant_id] = {
+        participant_id: m.participant_id,
+        participant_nom: m.participant_nom,
+        participant_role: m.participant_role,
+        messages: [],
+      };
+    }
+    conversations[m.participant_id].messages.push(m);
+  });
+
+  const listeConversations = Object.values(conversations).map((conv) => {
+    conv.messages.sort((a, b) => (b.date?.toMillis?.() || 0) - (a.date?.toMillis?.() || 0));
+    conv.dernierMessage = conv.messages[0];
+    conv.nonLus = conv.messages.filter((m) => m.expediteur_role !== "pdg" && m.lu_pdg === false).length;
+    return conv;
+  }).sort((a, b) => (b.dernierMessage?.date?.toMillis?.() || 0) - (a.dernierMessage?.date?.toMillis?.() || 0));
+
+  if (listeConversations.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun message privé pour le moment.</p>`;
+    return;
+  }
+
+  container.innerHTML = listeConversations.map((conv) => `
+    <div class="entity-card" data-action="ouvrir-fil" data-participant="${conv.participant_id}" style="cursor:pointer;">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">${conv.participant_nom || "Utilisateur"} <span class="entity-sub">(${conv.participant_role === "collecteur" ? "collecteur" : "membre"})</span></p>
+          <p class="entity-sub">${(conv.dernierMessage.contenu || "").slice(0, 60)}${(conv.dernierMessage.contenu || "").length > 60 ? "…" : ""}</p>
+        </div>
+        ${conv.nonLus > 0 ? `<span class="badge badge-suspendu">${conv.nonLus}</span>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+document.getElementById("liste-messagerie")?.addEventListener("click", (e) => {
+  const carte = e.target.closest("[data-action='ouvrir-fil']");
+  if (!carte) return;
+  ouvrirFilMessagerie(carte.dataset.participant);
+});
+
+async function ouvrirFilMessagerie(participantId) {
+  const messages = state.messagesPrives
+    .filter((m) => m.participant_id === participantId)
+    .sort((a, b) => (a.date?.toMillis?.() || 0) - (b.date?.toMillis?.() || 0));
+
+  if (messages.length === 0) return;
+  const participantNom = messages[0].participant_nom || "Utilisateur";
+  const participantRole = messages[0].participant_role;
+
+  ouvrirModal(`
+    <h2>${participantNom} <span class="subtitle-sm">(${participantRole === "collecteur" ? "collecteur" : "membre"})</span></h2>
+    <div id="fil-messages" style="max-height:280px; overflow-y:auto; margin:10px 0; display:flex; flex-direction:column; gap:8px;">
+      ${messages.map((m) => `
+        <div style="align-self:${m.expediteur_role === "pdg" ? "flex-end" : "flex-start"}; background:${m.expediteur_role === "pdg" ? "#14213D" : "#f0f0f0"}; color:${m.expediteur_role === "pdg" ? "white" : "#222"}; border-radius:10px; padding:8px 12px; max-width:80%;">
+          <p style="font-size:14px;">${m.contenu}</p>
+          <p style="font-size:11px; opacity:0.7; margin-top:4px;">${formatDateHeure(m.date)}</p>
+        </div>
+      `).join("")}
+    </div>
+    <form id="form-reponse-privee">
+      <div class="field-row">
+        <label>Répondre</label>
+        <textarea name="contenu" rows="2" required placeholder="Votre réponse..."></textarea>
+      </div>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Fermer</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Envoyer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-reponse-privee").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const contenu = new FormData(e.target).get("contenu").trim();
+    if (!contenu) return;
+    try {
+      await addDoc(collection(db, "messages_prives"), {
+        participant_id: participantId,
+        participant_nom: participantNom,
+        participant_role: participantRole,
+        expediteur_id: state.currentUser.uid,
+        expediteur_role: "pdg",
+        contenu,
+        date: serverTimestamp(),
+        lu_pdg: true,
+        lu_participant: false,
+      });
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+
+  const nonLus = messages.filter((m) => m.expediteur_role !== "pdg" && m.lu_pdg === false);
+  for (const m of nonLus) {
+    try {
+      await updateDoc(doc(db, "messages_prives", m.id), { lu_pdg: true });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+}
+
+function calculerChiffresParType(typeContratCle) {
+  const contrats = state.contracts.filter((c) => (c.type_contrat || "journalier") === typeContratCle);
+  const contratIds = new Set(contrats.map((c) => c.id));
+
+  // --- CORRIGÉ (26 sept 2026) : un contrat clôturé mais dont l'épargne
+  // n'a pas encore été soldée (epargne_soldee !== true) doit rester compté
+  // ici — sinon son solde "disparaît" du rapport dès la clôture du contrat.
+  const epargneNette = contrats
+    .filter((c) => c.statut === "actif" || (c.statut === "cloture" && !c.epargne_soldee))
+    .reduce((s, c) => s + Math.max(0, calculerEpargneNetteContrat(c)), 0);
+
+  let commissionPdg = 0;
+  let commissionCollecteur = 0;
+
+  if (typeContratCle === "journalier") {
+    // --- MODIFIÉ (28 sept 2026) : commission du jour 1 calculée avec le taux
+    // de chaque collecteur (taux figé sur le versement, sinon taux actuel). ---
+    const jour1Confirmes = state.payments.filter(
+      (p) => p.statut === "confirme" && p.jour_numero === 1 && contratIds.has(p.contract_id)
+    );
+    commissionPdg = jour1Confirmes.reduce((s, p) => s + partsCommissionJour1(p).pdg, 0);
+    commissionCollecteur = jour1Confirmes.reduce((s, p) => s + partsCommissionJour1(p).collecteur, 0);
+    const interets = state.interetsPartages.filter((i) => {
+      const pret = state.prets.find((p) => p.id === i.pret_id);
+      return pret && (pret.type_contrat || "journalier") === "journalier";
+    });
+    commissionPdg += interets.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+    commissionCollecteur += interets.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+  } else {
+    const frais = state.fraisInscriptions.filter((f) => contratIds.has(f.contract_id));
+    commissionPdg += frais.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+    commissionCollecteur += frais.reduce((s, f) => s + Number(f.montant_collecteur || 0), 0);
+    const interets = state.interetsPartages.filter((i) => {
+      const pret = state.prets.find((p) => p.id === i.pret_id);
+      return pret && (pret.type_contrat || "journalier") === typeContratCle;
+    });
+    commissionPdg += interets.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+    commissionCollecteur += interets.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+  }
+
+  const pretsEnCours = state.prets.filter((p) => p.statut === "actif" && (p.type_contrat || "journalier") === typeContratCle);
+  const totalPretsEnCours = pretsEnCours.reduce((s, p) => s + Number(p.montant_initial || 0), 0);
+
+  return {
+    nbContrats: contrats.filter((c) => c.statut === "actif").length,
+    epargneNette,
+    commissionPdg,
+    commissionCollecteur,
+    totalPretsEnCours,
+  };
+}
+
+function renderCardsParType() {
+  const container = document.getElementById("cards-par-type");
+  if (!container) return;
+  const types = ["journalier", "hebdomadaire", "mensuel"];
+  container.innerHTML = types.map((t) => {
+    const infoType = infoTypeContrat(t);
+    const chiffres = calculerChiffresParType(t);
+    return `
+      <div class="stat-card">
+        <p class="stat-label">${infoType.label} — ${chiffres.nbContrats} contrat(s) actif(s)</p>
+        <p class="stat-value" style="font-size:18px;">${formatGNF(chiffres.epargneNette)}</p>
+        <p class="subtitle-sm">Commission PDG : ${formatGNF(chiffres.commissionPdg)} · Collecteur : ${formatGNF(chiffres.commissionCollecteur)}</p>
+        <p class="subtitle-sm">Prêts en cours : ${formatGNF(chiffres.totalPretsEnCours)}</p>
+      </div>
+    `;
+  }).join("");
+}
+
+function renderRapportParType() {
+  const container = document.getElementById("rapport-par-type-resultats");
+  if (!container) return;
+  const types = ["journalier", "hebdomadaire", "mensuel"];
+  container.innerHTML = types.map((t) => {
+    const infoType = infoTypeContrat(t);
+    const chiffres = calculerChiffresParType(t);
+    return `
+      <div class="entity-card">
+        <div class="entity-card-top">
+          <p class="entity-nom">${infoType.label}</p>
+          <span class="badge badge-actif">${chiffres.nbContrats} contrat(s)</span>
+        </div>
+        <div class="detail-line"><span>Épargne nette (contrats actifs)</span><span style="font-weight:bold;">${formatGNF(chiffres.epargneNette)}</span></div>
+        <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(chiffres.commissionPdg)}</span></div>
+        <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(chiffres.commissionCollecteur)}</span></div>
+        <div class="detail-line"><span>Prêts en cours</span><span>${formatGNF(chiffres.totalPretsEnCours)}</span></div>
+      </div>
+    `;
+  }).join("");
+}
+
+function obtenirBornesPeriode(type) {
+  const maintenant = new Date();
+  let debut, fin;
+  if (type === "jour") {
+    debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 0, 0, 0);
+    fin = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate(), 23, 59, 59, 999);
+  } else if (type === "semaine") {
+    const jourSemaine = maintenant.getDay();
+    const decalageLundi = jourSemaine === 0 ? 6 : jourSemaine - 1;
+    debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), maintenant.getDate() - decalageLundi, 0, 0, 0);
+    fin = new Date(debut.getFullYear(), debut.getMonth(), debut.getDate() + 6, 23, 59, 59, 999);
+  } else if (type === "mois") {
+    debut = new Date(maintenant.getFullYear(), maintenant.getMonth(), 1, 0, 0, 0);
+    fin = new Date(maintenant.getFullYear(), maintenant.getMonth() + 1, 0, 23, 59, 59, 999);
+  } else {
+    debut = new Date(maintenant.getFullYear(), 0, 1, 0, 0, 0);
+    fin = new Date(maintenant.getFullYear(), 11, 31, 23, 59, 59, 999);
+  }
+  return { debut, fin };
+}
+
+function libellePeriode(type) {
+  const labels = { jour: "Journalier", semaine: "Hebdomadaire", mois: "Mensuel", annee: "Annuel" };
+  return labels[type] || type;
+}
+
+function dateDansPeriode(champDate, debut, fin) {
+  if (!champDate) return false;
+  const d = champDate.toDate ? champDate.toDate() : new Date(champDate);
+  return d >= debut && d <= fin;
+}
+
+function calculerChiffresPeriodeCollecteur(collecteurId, debut, fin) {
+  // --- MODIFIÉ (28 sept 2026) : commission du jour 1 avec le taux du
+  // collecteur (figé sur le versement, sinon taux actuel). ---
+  const jour1Periode = state.payments.filter(
+    (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero === 1 &&
+      dateDansPeriode(p.date_confirmation || p.date, debut, fin)
+  );
+  const commissionPdgInscriptions = jour1Periode.reduce((s, p) => s + partsCommissionJour1(p).pdg, 0);
+  const commissionCollecteurInscriptions = jour1Periode.reduce((s, p) => s + partsCommissionJour1(p).collecteur, 0);
+
+  const fraisPeriode = state.fraisInscriptions.filter(
+    (f) => f.collecteur_id === collecteurId && dateDansPeriode(f.date, debut, fin)
+  );
+  const fraisPdgPeriode = fraisPeriode.reduce((s, f) => s + Number(f.montant_pdg || 0), 0);
+  const fraisCollecteurPeriode = fraisPeriode.reduce((s, f) => s + Number(f.montant_collecteur || 0), 0);
+
+  const interetsPeriode = state.interetsPartages.filter(
+    (i) => i.collecteur_id === collecteurId && dateDansPeriode(i.date, debut, fin)
+  );
+  const interetsPdgPeriode = interetsPeriode.reduce((s, i) => s + Number(i.montant_pdg || 0), 0);
+  const interetsCollecteurPeriode = interetsPeriode.reduce((s, i) => s + Number(i.montant_collecteur || 0), 0);
+
+  const commissionPdg = commissionPdgInscriptions + fraisPdgPeriode + interetsPdgPeriode;
+  const commissionCollecteur = commissionCollecteurInscriptions + fraisCollecteurPeriode + interetsCollecteurPeriode;
+  const commissionGlobale = commissionPdg + commissionCollecteur;
+
+  const soldeEpargneNetPeriode = state.payments.filter(
+    (p) => p.collecteur_id === collecteurId && p.statut === "confirme" && p.jour_numero > 1 &&
+      dateDansPeriode(p.date_confirmation || p.date, debut, fin)
+  ).reduce((s, p) => s + Number(p.montant || 0), 0);
+
+  return { commissionGlobale, commissionPdg, commissionCollecteur, soldeEpargneNetPeriode };
+}
+
+function regrouperCollecteursParZone() {
+  const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const zones = {};
+  collecteurs.forEach((c) => {
+    const pref = c.prefecture && c.prefecture.trim() ? c.prefecture.trim() : "Non précisé";
+    const sousPref = c.sous_prefecture && c.sous_prefecture.trim() ? c.sous_prefecture.trim() : "Non précisé";
+    if (!zones[pref]) zones[pref] = {};
+    if (!zones[pref][sousPref]) zones[pref][sousPref] = [];
+    zones[pref][sousPref].push(c);
+  });
+  return zones;
+}
+
+function renderRapport(type) {
+  const { debut, fin } = obtenirBornesPeriode(type);
+  const zones = regrouperCollecteursParZone();
+  const prefecturesTriees = Object.keys(zones).sort((a, b) => a.localeCompare(b, "fr"));
+
+  const entete = document.getElementById("rapport-entete");
+  if (entete) {
+    entete.innerHTML = `
+      <div class="card" style="margin-bottom:12px;">
+        <h2 style="font-size:15px;">Rapport ${libellePeriode(type)}</h2>
+        <p class="subtitle-sm">Du ${formatDate(debut)} au ${formatDate(fin)}</p>
+      </div>
+    `;
+  }
+
+  const container = document.getElementById("rapport-resultats");
+  if (!container) return;
+
+  if (prefecturesTriees.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucun collecteur enregistré.</p>`;
+    return;
+  }
+
+  let totalGlobalCommission = 0, totalGlobalPdg = 0, totalGlobalCollecteur = 0, totalGlobalEpargne = 0;
+  let html = "";
+
+  prefecturesTriees.forEach((pref) => {
+    html += `<h3 style="margin-top:16px; margin-bottom:6px; font-size:15px;">${pref}</h3>`;
+    const sousPrefsTriees = Object.keys(zones[pref]).sort((a, b) => a.localeCompare(b, "fr"));
+    sousPrefsTriees.forEach((sousPref) => {
+      html += `<p style="font-weight:bold; font-size:13px; color:#666; margin:8px 0 4px;">${sousPref}</p>`;
+      zones[pref][sousPref].forEach((c) => {
+        const chiffres = calculerChiffresPeriodeCollecteur(c.uid, debut, fin);
+        totalGlobalCommission += chiffres.commissionGlobale;
+        totalGlobalPdg += chiffres.commissionPdg;
+        totalGlobalCollecteur += chiffres.commissionCollecteur;
+        totalGlobalEpargne += chiffres.soldeEpargneNetPeriode;
+        html += `
+          <div class="entity-card">
+            <div class="entity-card-top">
+              <p class="entity-nom">${c.nom}</p>
+              <span class="badge badge-actif">${c.statut}</span>
+            </div>
+            <div class="detail-line"><span>Commission globale</span><span style="font-weight:bold;">${formatGNF(chiffres.commissionGlobale)}</span></div>
+            <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(chiffres.commissionPdg)}</span></div>
+            <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(chiffres.commissionCollecteur)}</span></div>
+            <div class="detail-line"><span>Solde d'épargne net (période)</span><span>${formatGNF(chiffres.soldeEpargneNetPeriode)}</span></div>
+          </div>
+        `;
+      });
+    });
+  });
+
+  html += `
+    <div class="card" style="margin-top:16px; background:#f4f6f8;">
+      <h3 style="font-size:14px;">Totaux de la période</h3>
+      <div class="detail-line"><span>Commission globale</span><span style="font-weight:bold;">${formatGNF(totalGlobalCommission)}</span></div>
+      <div class="detail-line"><span>Commission PDG</span><span>${formatGNF(totalGlobalPdg)}</span></div>
+      <div class="detail-line"><span>Commission collecteur</span><span>${formatGNF(totalGlobalCollecteur)}</span></div>
+      <div class="detail-line"><span>Solde d'épargne net (période)</span><span>${formatGNF(totalGlobalEpargne)}</span></div>
+    </div>
+  `;
+
+  container.innerHTML = html;
+}
+
+document.getElementById("btn-generer-rapport")?.addEventListener("click", () => {
+  ouvrirModal(`
+    <h2>Choisir le type de rapport</h2>
+    <p class="subtitle-sm">Sélectionnez la période souhaitée. Les collecteurs seront affichés classés par zone.</p>
+    <div class="modal-actions" style="flex-direction:column; gap:8px;">
+      <button class="btn btn-secondary" data-periode="jour" style="width:100%;">Journalier</button>
+      <button class="btn btn-secondary" data-periode="semaine" style="width:100%;">Hebdomadaire</button>
+      <button class="btn btn-secondary" data-periode="mois" style="width:100%;">Mensuel</button>
+      <button class="btn btn-secondary" data-periode="annee" style="width:100%;">Annuel</button>
+    </div>
+  `);
+  document.querySelectorAll("[data-periode]").forEach((b) => {
+    b.addEventListener("click", () => {
+      renderRapport(b.dataset.periode);
+      fermerModal();
+    });
+  });
+});
+
+// ==========================================================
+// --- MODIFIÉ (13 sept 2026) : ajout des totaux de commission par zone à
+// la fin du rapport national PDF — sous-préfecture/quartier (avec 12% du
+// chef de zone) puis préfecture/commune (avec 8% du coordinateur). La
+// "commission totale" d'un collecteur = commission PDG + commission
+// collecteur. Les 12%/8% se calculent sur la commission totale cumulée de
+// la zone de responsabilité concernée.
+// ==========================================================
+
+function construireTotauxCommissionParZone() {
+  const zones = regrouperCollecteursParZone();
+  const prefecturesTriees = Object.keys(zones).sort((a, b) => a.localeCompare(b, "fr"));
+
+  let lignesSousPref = "";
+  let lignesPref = "";
+
+  prefecturesTriees.forEach((pref) => {
+    let totalPrefecture = 0;
+    const sousPrefsTriees = Object.keys(zones[pref]).sort((a, b) => a.localeCompare(b, "fr"));
+
+    sousPrefsTriees.forEach((sousPref) => {
+      let totalSousPrefecture = 0;
+      zones[pref][sousPref].forEach((c) => {
+        const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+        const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+        totalSousPrefecture += commissionPdg + commissionCollecteur;
+      });
+      totalPrefecture += totalSousPrefecture;
+      const partChefZone = totalSousPrefecture * 0.12;
+      lignesSousPref += `
+        <tr>
+          <td>${pref}</td>
+          <td>${sousPref}</td>
+          <td>${formatGNF(totalSousPrefecture)}</td>
+          <td>${formatGNF(partChefZone)}</td>
+        </tr>
+      `;
+    });
+
+    const partCoordinateur = totalPrefecture * 0.08;
+    lignesPref += `
+      <tr>
+        <td>${pref}</td>
+        <td>${formatGNF(totalPrefecture)}</td>
+        <td>${formatGNF(partCoordinateur)}</td>
+      </tr>
+    `;
+  });
+
+  return { lignesSousPref, lignesPref };
+}
+
+function genererBrochureNationalePdf() {
+  const collecteurs = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+  const collecteursTries = [...collecteurs].sort((a, b) => {
+    const prefA = a.prefecture && a.prefecture.trim() ? a.prefecture.trim() : "Non précisé";
+    const prefB = b.prefecture && b.prefecture.trim() ? b.prefecture.trim() : "Non précisé";
+    if (prefA !== prefB) return prefA.localeCompare(prefB, "fr");
+    const sousA = a.sous_prefecture && a.sous_prefecture.trim() ? a.sous_prefecture.trim() : "Non précisé";
+    const sousB = b.sous_prefecture && b.sous_prefecture.trim() ? b.sous_prefecture.trim() : "Non précisé";
+    return sousA.localeCompare(sousB, "fr");
+  });
+
+  if (collecteursTries.length === 0) {
+    notifier("Aucun collecteur à inclure dans le rapport national.", "erreur");
+    return;
+  }
+
+  let lignes = "";
+  collecteursTries.forEach((c, index) => {
+    const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+    const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+    const commissionTotale = commissionPdg + commissionCollecteur;
+    const soldeEpargne = calculerSoldeEpargneNetCollecteur(c.uid);
+    const pref = c.prefecture && c.prefecture.trim() ? c.prefecture.trim() : "Non précisé";
+    const sousPref = c.sous_prefecture && c.sous_prefecture.trim() ? c.sous_prefecture.trim() : "Non précisé";
+    lignes += `
+      <tr>
+        <td>${index + 1}</td>
+        <td>${pref} / ${sousPref}</td>
+        <td>${c.nom}</td>
+        <td>${c.telephone || ""}</td>
+        <td>${formatGNF(soldeEpargne)}</td>
+        <td>${formatGNF(commissionTotale)}</td>
+        <td>${formatGNF(commissionPdg)}</td>
+        <td>${formatGNF(commissionCollecteur)}</td>
+        <td></td>
+      </tr>
+    `;
+  });
+
+  const { lignesSousPref, lignesPref } = construireTotauxCommissionParZone();
+
+  const html = `
+    <!DOCTYPE html>
+    <html lang="fr">
+    <head>
+      <meta charset="UTF-8" />
+      <title>Rapport national — ${state.entreprise?.nom || "CPCT-TINA"}</title>
+      <style>
+        body { font-family: Arial, sans-serif; padding: 20px; color: #222; }
+        h1 { font-size: 18px; margin-bottom: 4px; }
+        h2.section-titre { font-size: 15px; margin-top: 28px; margin-bottom: 8px; }
+        p.sub { color: #666; font-size: 12px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        th, td { border: 1px solid #999; padding: 6px 4px; text-align: left; }
+        th { background: #14213D; color: white; }
+        td:nth-child(1) { text-align: center; width: 28px; }
+        td:last-child, th:last-child { min-width: 90px; }
+        table.totaux-zone th { background: #198754; }
+        @media print {
+          @page { size: A4 landscape; margin: 12mm; }
+        }
+      </style>
+    </head>
+    <body>
+      <h1>${state.entreprise?.nom || "CPCT-TINA"} — Rapport national des collecteurs</h1>
+      <p class="sub">Généré le ${formatDate(new Date())} · ${collecteursTries.length} collecteur(s)</p>
+      <table>
+        <thead>
+          <tr>
+            <th>N°</th>
+            <th>Préfecture / Sous-préfecture</th>
+            <th>Prénom et nom du collecteur</th>
+            <th>Téléphone</th>
+            <th>Solde d'épargne</th>
+            <th>Commission totale</th>
+            <th>Commission PDG</th>
+            <th>Commission collecteur</th>
+            <th>Signature superviseur</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lignes}
+        </tbody>
+      </table>
+
+      <h2 class="section-titre">Totaux par sous-préfecture / quartier — part du chef de zone (12%)</h2>
+      <table class="totaux-zone">
+        <thead>
+          <tr>
+            <th>Préfecture / Commune</th>
+            <th>Sous-préfecture / Quartier</th>
+            <th>Commission totale de la zone</th>
+            <th>Part chef de zone (12%)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lignesSousPref}
+        </tbody>
+      </table>
+
+      <h2 class="section-titre">Totaux par préfecture / commune — part du coordinateur (8%)</h2>
+      <table class="totaux-zone">
+        <thead>
+          <tr>
+            <th>Préfecture / Commune</th>
+            <th>Commission totale de la préfecture/commune</th>
+            <th>Part coordinateur préfectoral/communal (8%)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${lignesPref}
+        </tbody>
+      </table>
+
+      <script>window.onload = () => { window.print(); };</script>
+    </body>
+    </html>
+  `;
+
+  const fenetre = window.open("", "_blank");
+  if (!fenetre) {
+    notifier("Le navigateur a bloqué l'ouverture de la fenêtre d'impression. Autorisez les pop-ups pour ce site.", "erreur");
+    return;
+  }
+  fenetre.document.open();
+  fenetre.document.write(html);
+  fenetre.document.close();
+}
+
+document.getElementById("btn-rapport-national-pdf")?.addEventListener("click", genererBrochureNationalePdf);
+
+async function reinitialiserTout() {
+  const collectionsASupprimer = [
+    "users", "contracts", "payments", "decaissements",
+    "membres_en_attente_validation", "withdrawalRequests",
+    "prets", "remboursements_prets", "versements_collecteur",
+    "interets_prets_repartis", "codes_parrainage", "propositions_reconduction",
+    "retraits_commission", "diffusions", "messages_prives",
+    "frais_inscription", "depenses", "redistributions_interets", "parametres",
+  ];
+
+  try {
+    for (const nomCollection of collectionsASupprimer) {
+      const snap = await getDocs(collection(db, nomCollection));
+      for (const d of snap.docs) {
+        await deleteDoc(doc(db, nomCollection, d.id));
+      }
+    }
+    await deleteDoc(doc(db, "entreprise", "info"));
+
+    state.unsubscribers.forEach((u) => u());
+    state.unsubscribers = [];
+    state.entreprise = null;
+    state.currentUser = null;
+
+    try {
+      if (auth.currentUser) await auth.currentUser.delete();
+    } catch (e) {
+      // Si la suppression du compte Auth échoue (session ancienne), on se contente de se déconnecter
+    }
+    try { await signOut(auth); } catch (e) { /* déjà déconnecté si le compte Auth a été supprimé */ }
+
+    notifier("Application réinitialisée. Redémarrage...", "succes");
+    setTimeout(() => window.location.reload(), 1500);
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur lors de la réinitialisation : " + err.message, "erreur");
+  }
+}
+
+document.getElementById("btn-reinitialiser-tout")?.addEventListener("click", () => {
+  ouvrirModal(`
+    <h2 style="color:#c0392b;">⚠️ Réinitialiser complètement l'application ?</h2>
+    <p class="subtitle-sm">Cette action supprimera <b>définitivement</b> toutes les données : entreprise, PDG, collecteurs, membres, contrats, versements, prêts, retraits. L'application redémarrera comme à l'installation. Cette action est <b>irréversible</b>.</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+      <button type="button" class="btn btn-danger" id="modal-confirmer-reset-1" style="flex:1;">Continuer</button>
+    </div>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("modal-confirmer-reset-1").addEventListener("click", () => {
+    ouvrirModal(`
+      <h2 style="color:#c0392b;">⚠️ Dernière confirmation</h2>
+      <p class="subtitle-sm">Toutes les données seront supprimées et l'application redémarrera comme neuve. Confirmez-vous ?</p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler-2" style="flex:1;">Annuler</button>
+        <button type="button" class="btn btn-danger" id="modal-confirmer-reset-2" style="flex:1;">Oui, tout supprimer</button>
+      </div>
+    `);
+    document.getElementById("modal-annuler-2").addEventListener("click", fermerModal);
+    document.getElementById("modal-confirmer-reset-2").addEventListener("click", async () => {
+      fermerModal();
+      await reinitialiserTout();
+    });
+  });
+});
+
+function renderApercu() {
+  const collecteursTous = state.users.filter((u) => u.role === "collecteur" && u.statut !== "supprime");
+
+  let commissionPdgDisponible = 0;
+  let commissionGlobaleTotale = 0;
+  let soldeGlobalEpargnes = 0;
+
+  collecteursTous.forEach((c) => {
+    const commissionPdg = calculerCommissionPdgParCollecteur(c.uid);
+    const commissionCollecteur = calculerCommissionCollecteurPropre(c.uid);
+    commissionPdgDisponible += commissionPdg;
+    commissionGlobaleTotale += commissionPdg + commissionCollecteur;
+    soldeGlobalEpargnes += calculerSoldeEpargneNetCollecteur(c.uid);
+  });
+
+  document.getElementById("stat-total-epargnes").textContent = formatGNF(soldeGlobalEpargnes > 0 ? soldeGlobalEpargnes : 0);
+  document.getElementById("stat-total-commissions").textContent = formatGNF(commissionPdgDisponible);
+  document.getElementById("stat-commission-globale").textContent = formatGNF(commissionGlobaleTotale);
+  document.getElementById("stat-nb-collecteurs").textContent = state.users.filter((u) => u.role === "collecteur" && u.statut === "actif").length;
+  document.getElementById("stat-nb-membres").textContent = state.users.filter((u) => u.role === "membre").length;
+
+  renderCardsParType();
+
+  const { parMois } = calculerSoldes(state.payments, state.contracts);
+  const cles = Object.keys(parMois).sort().reverse();
+  const container = document.getElementById("monthly-breakdown");
+  if (cles.length === 0) {
+    container.innerHTML = `<p class="empty-state">Aucune donnée pour le moment.</p>`;
+  } else {
+    container.innerHTML = cles.slice(0, 12).map((cle) => `
+      <div class="monthly-row">
+        <span class="monthly-mois">${nomMois(cle)}</span>
+        <span class="monthly-detail">
+          Épargnes : <b class="epargne">${formatGNF(parMois[cle].epargnes)}</b><br/>
+          Commissions : <b class="commission">${formatGNF(parMois[cle].commissions)}</b>
+        </span>
+      </div>
+    `).join("");
+  }
+}
+
+document.getElementById("titre-historique-mensuel").addEventListener("click", () => {
+  const titre = document.getElementById("titre-historique-mensuel");
+  const zone = document.getElementById("monthly-breakdown");
+  zone.classList.toggle("hidden");
+  titre.classList.toggle("ouvert");
+});
+
+// ==========================================================
+// --- NOUVEAU (30 sept 2026) : CP-PAS, étape 2 — ÉPARGNE (vue PDG).
+// Bloc injecté sous le formulaire des paramètres d'intérêts :
+//  - interrupteur "épargne active" (désactivé par défaut) ;
+//  - produits d'épargne paramétrables (aucune valeur financière en dur) ;
+//  - comptes ouverts et encours, par préfecture ;
+//  - flux en direct des dernières écritures du grand livre ;
+//  - contrôle d'intégrité : reconstruit chaque solde à partir du grand livre.
+// Le module ./cp-pas-commun.js est chargé à la demande : s'il est absent,
+// le reste de l'application fonctionne normalement.
+// ==========================================================
+const TYPES_PRODUIT_CP = {
+  LIBRE: "Épargne libre",
+  PROJET: "Épargne projet",
+  PREVOYANCE: "Épargne prévoyance",
+  TERME: "Épargne à terme",
+};
+const LIBELLES_OPERATION_CP = { DEPOT_OUVERTURE: "Dépôt d'ouverture" };
+const LIBELLES_STATUT_COMPTE_CP = {
+  EN_ATTENTE_KYC: "En attente du dossier",
+  ACTIF: "Actif",
+  BLOQUE: "Bloqué",
+  CLOTURE: "Clôturé",
+};
+
+const cpPas = {
+  produits: [],
+  comptes: [],
+  recents: [],
+  config: { epargne_active: false },
+  integrite: null,
+  integriteEnCours: false,
+  module: null,
+  erreur: null,
+};
+
+function escCp(t) {
+  return String(t ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+async function obtenirModuleCpPas() {
+  if (cpPas.module) return cpPas.module;
+  try {
+    cpPas.module = await import("./cp-pas-commun.js");
+  } catch (err) {
+    console.warn("Module CP-PAS indisponible :", err);
+    cpPas.module = null;
+  }
+  return cpPas.module;
+}
+
+function initialiserCpPasPdg() {
+  const signaler = (nom) => (err) => {
+    console.warn("CP-PAS (" + nom + ") :", err);
+    cpPas.erreur = err && err.code === "permission-denied"
+      ? "Accès refusé par les règles Firestore : ajoutez les règles de l'étape 2 (fichier fourni)."
+      : "Erreur de lecture (" + nom + ") : " + (err && err.message ? err.message : err);
+    renderCpPasPdg();
+  };
+
+  const u1 = onSnapshot(collection(db, "produits_epargne"), (snap) => {
+    cpPas.produits = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderCpPasPdg();
+  }, signaler("produits"));
+  const u2 = onSnapshot(collection(db, "comptes_epargne"), (snap) => {
+    cpPas.comptes = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    renderCpPasPdg();
+  }, signaler("comptes"));
+  const u3 = onSnapshot(doc(db, "configuration", "cp_pas"), (snap) => {
+    cpPas.config = snap.exists() ? snap.data() : { epargne_active: false };
+    renderCpPasPdg();
+  }, signaler("configuration"));
+  state.unsubscribers.push(u1, u2, u3);
+
+  obtenirModuleCpPas().then((mod) => {
+    if (!mod) return;
+    const u4 = mod.ecouterDernieresEcritures(30, (liste) => {
+      cpPas.recents = liste;
+      renderCpPasPdg();
+    }, signaler("grand livre"));
+    state.unsubscribers.push(u4);
+  });
+
+  renderCpPasPdg();
+}
+
+function zoneCpPasPdg() {
+  let zone = document.getElementById("cp-pas-pdg-zone");
+  if (zone) return zone;
+  zone = document.createElement("div");
+  zone.id = "cp-pas-pdg-zone";
+  zone.className = "card";
+  zone.style.marginTop = "14px";
+  const ancre = document.getElementById("form-parametres-interets");
+  const carte = ancre ? (ancre.closest(".card") || ancre.parentElement) : null;
+  if (carte && carte.parentElement) {
+    carte.insertAdjacentElement("afterend", zone);
+  } else {
+    document.getElementById("screen-dashboard").appendChild(zone);
+  }
+  zone.addEventListener("click", gestionClicCpPasPdg);
+  return zone;
+}
+
+function gestionClicCpPasPdg(e) {
+  const btn = e.target.closest("[data-cp-action]");
+  if (!btn) return;
+  const action = btn.dataset.cpAction;
+  if (action === "toggle-epargne") basculerEpargneActive();
+  else if (action === "nouveau-produit") ouvrirFormulaireProduit(null);
+  else if (action === "modifier-produit") ouvrirFormulaireProduit(btn.dataset.code);
+  else if (action === "produits-types") creerProduitsTypes();
+  else if (action === "verifier-integrite") lancerVerificationIntegrite();
+}
+
+function renderCpPasPdg() {
+  let zone;
+  try {
+    zone = zoneCpPasPdg();
+  } catch (err) {
+    console.warn("Zone CP-PAS :", err);
+    return;
+  }
+
+  const actif = cpPas.config.epargne_active === true;
+  const comptes = cpPas.comptes;
+  const nbActifs = comptes.filter((c) => c.statut === "ACTIF").length;
+  const nbAttente = comptes.filter((c) => c.statut === "EN_ATTENTE_KYC").length;
+  const encours = comptes.reduce((s, c) => s + Number(c.solde || 0), 0);
+
+  const parPref = {};
+  comptes.forEach((c) => {
+    const k = c.prefecture && String(c.prefecture).trim() ? String(c.prefecture).trim() : "Non précisé";
+    if (!parPref[k]) parPref[k] = { nb: 0, encours: 0 };
+    parPref[k].nb += 1;
+    parPref[k].encours += Number(c.solde || 0);
+  });
+  const prefsTriees = Object.keys(parPref).sort((a, b) => a.localeCompare(b, "fr"));
+
+  const produits = [...cpPas.produits].sort((a, b) => String(a.id).localeCompare(String(b.id), "fr"));
+
+  const produitsHtml = produits.length === 0
+    ? `<p class="empty-state">Aucun produit. Créez les 4 produits types ou un produit personnalisé.</p>`
+    : produits.map((p) => `
+        <div class="entity-card">
+          <div class="entity-card-top">
+            <div>
+              <p class="entity-nom">${escCp(p.nom)}</p>
+              <p class="entity-sub">${escCp(p.id)} · ${escCp(TYPES_PRODUIT_CP[p.type] || p.type || "")} · v${escCp(p.version || 1)}</p>
+            </div>
+            <span class="badge ${p.statut === "actif" ? "badge-actif" : "badge-suspendu"}">${escCp(p.statut || "inactif")}</span>
+          </div>
+          <div class="detail-line"><span>Dépôt minimum / solde minimum</span><span>${formatGNF(p.depot_minimum || 0)} / ${formatGNF(p.solde_minimum || 0)}</span></div>
+          <div class="detail-line"><span>Plafond</span><span>${Number(p.plafond || 0) > 0 ? formatGNF(p.plafond) : "aucun"}</span></div>
+          <div class="detail-line"><span>Durée</span><span>${Number(p.duree_mois || 0) > 0 ? escCp(p.duree_mois) + " mois" : "—"}</span></div>
+          <div class="entity-actions">
+            <button class="btn btn-secondary btn-sm" data-cp-action="modifier-produit" data-code="${escCp(p.id)}">Modifier</button>
+          </div>
+        </div>
+      `).join("");
+
+  const prefHtml = prefsTriees.length === 0
+    ? `<p class="empty-state">Aucun compte d'épargne ouvert pour le moment.</p>`
+    : prefsTriees.map((k) => `
+        <div class="detail-line"><span>${escCp(k)} — ${parPref[k].nb} compte(s)</span><span>${formatGNF(parPref[k].encours)}</span></div>
+      `).join("");
+
+  const recentsHtml = cpPas.recents.length === 0
+    ? `<p class="empty-state">Aucune opération enregistrée.</p>`
+    : cpPas.recents.map((e) => {
+        const agence = state.users.find((u) => u.uid === e.agency_id);
+        const credit = e.direction === "CREDIT";
+        return `
+          <div class="detail-line">
+            <span>${escCp(formatDateHeure(e.timestamp))} — ${escCp(e.reference || "")} · ${escCp(LIBELLES_OPERATION_CP[e.operation_type] || e.operation_type || "")} · ${e.account_type === "CAISSE_AGENCE" ? "Caisse" : escCp(e.account_numero || "")}${agence ? " · " + escCp(agence.nom) : ""}</span>
+            <span style="color:${credit ? "#198754" : "#c0392b"}; font-weight:bold;">${credit ? "+" : "−"}${formatGNF(e.amount)}</span>
+          </div>
+        `;
+      }).join("");
+
+  let integriteHtml = "";
+  if (cpPas.integriteEnCours) {
+    integriteHtml = `<p class="subtitle-sm">Vérification en cours…</p>`;
+  } else if (cpPas.integrite) {
+    const r = cpPas.integrite;
+    const propre = r.ecarts.length === 0 && r.orphelines.length === 0;
+    integriteHtml = propre
+      ? `<p class="subtitle-sm" style="color:#198754;">✔ Aucun écart : ${r.nbEcritures} écriture(s), ${r.nbComptes} compte(s), ${r.nbCaisses} caisse(s) vérifiés (${escCp(formatDateHeure(r.date))}).</p>`
+      : `<p class="subtitle-sm" style="color:#c0392b;">✖ ${r.ecarts.length} écart(s) et ${r.orphelines.length} écriture(s) orpheline(s) (${escCp(formatDateHeure(r.date))}).</p>
+         ${r.ecarts.map((x) => `<div class="detail-line"><span>${escCp(x.libelle)}</span><span>grand livre ${formatGNF(x.attendu)} ≠ affiché ${formatGNF(x.affiche)}</span></div>`).join("")}
+         ${r.orphelines.map((id) => `<div class="detail-line"><span>Écritures sans compte : ${escCp(id)}</span><span></span></div>`).join("")}`;
+  }
+
+  zone.innerHTML = `
+    <h2 style="font-size:16px; margin-bottom:4px;">CP-PAS — Épargne et grand livre</h2>
+    <p class="subtitle-sm">Produits d'épargne, comptes ouverts par les agences et contrôle du grand livre.</p>
+    ${cpPas.erreur ? `<p class="subtitle-sm" style="color:#c0392b;">${escCp(cpPas.erreur)}</p>` : ""}
+
+    <div class="entity-card">
+      <div class="entity-card-top">
+        <div>
+          <p class="entity-nom">Épargne CP-PAS : ${actif ? "ACTIVÉE" : "désactivée"}</p>
+          <p class="entity-sub">${actif ? "Les agences peuvent ouvrir des comptes et enregistrer des dépôts." : "Aucun compte ne peut être ouvert. N'activez qu'après validation du statut légal ou en mode pilote de test."}</p>
+        </div>
+        <span class="badge ${actif ? "badge-actif" : "badge-suspendu"}">${actif ? "actif" : "inactif"}</span>
+      </div>
+      <div class="entity-actions">
+        <button class="btn ${actif ? "btn-danger" : "btn-primary"} btn-sm" data-cp-action="toggle-epargne">${actif ? "Désactiver" : "Activer"}</button>
+      </div>
+    </div>
+
+    <h3 style="font-size:14px; margin:16px 0 8px;">Produits d'épargne</h3>
+    <div class="modal-actions" style="margin-bottom:10px;">
+      <button class="btn btn-secondary btn-sm" data-cp-action="nouveau-produit" style="flex:1;">Nouveau produit</button>
+      <button class="btn btn-secondary btn-sm" data-cp-action="produits-types" style="flex:1;">Créer les 4 produits types</button>
+    </div>
+    ${produitsHtml}
+
+    <h3 style="font-size:14px; margin:16px 0 8px;">Comptes ouverts</h3>
+    <div class="detail-line"><span>Comptes : ${comptes.length} (actifs : ${nbActifs} · en attente du dossier : ${nbAttente})</span><span></span></div>
+    <div class="detail-line"><span>Encours total</span><span style="font-weight:bold;">${formatGNF(encours)}</span></div>
+    ${prefHtml}
+
+    <h3 style="font-size:14px; margin:16px 0 8px;">Activité en direct (30 dernières écritures)</h3>
+    ${recentsHtml}
+
+    <h3 style="font-size:14px; margin:16px 0 8px;">Intégrité du grand livre</h3>
+    <p class="subtitle-sm">Reconstruit chaque solde (crédits − débits) à partir des écritures et signale tout écart.</p>
+    <div class="modal-actions" style="margin-bottom:8px;">
+      <button class="btn btn-secondary btn-sm" data-cp-action="verifier-integrite" style="flex:1;">Vérifier l'intégrité</button>
+    </div>
+    ${integriteHtml}
+  `;
+}
+
+function basculerEpargneActive() {
+  const nouvelEtat = !(cpPas.config.epargne_active === true);
+  ouvrirModalConfirmation(
+    nouvelEtat ? "Activer l'épargne CP-PAS ?" : "Désactiver l'épargne CP-PAS ?",
+    nouvelEtat
+      ? "Les agences pourront ouvrir des comptes d'épargne et enregistrer des dépôts. N'activez qu'après validation du statut juridique de la CP-PAS (BCRG) ou pour une phase pilote de test. Les produits doivent avoir été paramétrés et activés."
+      : "Plus aucun compte d'épargne ne pourra être ouvert. Les comptes et écritures existants restent intacts.",
+    async () => {
+      try {
+        await setDoc(doc(db, "configuration", "cp_pas"), {
+          epargne_active: nouvelEtat,
+          maj_par: state.currentUser.uid,
+          date_maj: serverTimestamp(),
+        }, { merge: true });
+        notifier(nouvelEtat ? "Épargne CP-PAS activée." : "Épargne CP-PAS désactivée.", "succes");
+        fermerModal();
+      } catch (err) {
+        console.error(err);
+        notifier("Erreur : " + err.message, "erreur");
+      }
+    }
+  );
+}
+
+async function creerProduitsTypes() {
+  const mod = await obtenirModuleCpPas();
+  if (!mod) {
+    notifier("Module CP-PAS indisponible : vérifiez que cp-pas-commun.js est bien publié.", "erreur");
+    return;
+  }
+  try {
+    let crees = 0;
+    for (const prod of mod.produitsTypes()) {
+      if (cpPas.produits.some((x) => x.id === prod.code)) continue;
+      await setDoc(doc(db, "produits_epargne", prod.code), {
+        ...prod,
+        version: 1,
+        date_effet: new Date().toISOString().slice(0, 10),
+        approuve_par: state.currentUser.uid,
+        date_creation: serverTimestamp(),
+        date_maj: serverTimestamp(),
+      });
+      crees += 1;
+    }
+    notifier(crees > 0 ? crees + " produit(s) créé(s) (inactifs : à paramétrer avant activation)." : "Les 4 produits types existent déjà.", "succes");
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur : " + err.message, "erreur");
+  }
+}
+
+function ouvrirFormulaireProduit(code) {
+  const p = code ? cpPas.produits.find((x) => x.id === code) : null;
+  const v = (champ, defaut = "") => (p && p[champ] !== undefined && p[champ] !== null ? p[champ] : defaut);
+  ouvrirModal(`
+    <h2>${p ? "Modifier le produit" : "Nouveau produit d'épargne"}</h2>
+    <p class="subtitle-sm">Aucune règle financière n'est codée en dur : tout est défini ici. Les paramètres définitifs sont à valider avant activation.</p>
+    <form id="form-produit-cp">
+      <div class="field-row">
+        <label>Code (lettres, chiffres, _)</label>
+        <input type="text" name="code" value="${escCp(p ? p.id : "")}" ${p ? "disabled" : ""} required />
+      </div>
+      <div class="field-row">
+        <label>Nom</label>
+        <input type="text" name="nom" value="${escCp(v("nom"))}" required />
+      </div>
+      <div class="field-row">
+        <label>Type</label>
+        <select name="type" required>
+          ${Object.keys(TYPES_PRODUIT_CP).map((k) => `<option value="${k}" ${v("type", "LIBRE") === k ? "selected" : ""}>${TYPES_PRODUIT_CP[k]}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field-row">
+        <label>Objectif du produit</label>
+        <textarea name="objectif" rows="2">${escCp(v("objectif"))}</textarea>
+      </div>
+      <div class="field-row">
+        <label>Dépôt minimum (GNF)</label>
+        <input type="number" name="depot_minimum" min="0" value="${escCp(v("depot_minimum", 0))}" required />
+      </div>
+      <div class="field-row">
+        <label>Solde minimum (GNF)</label>
+        <input type="number" name="solde_minimum" min="0" value="${escCp(v("solde_minimum", 0))}" required />
+      </div>
+      <div class="field-row">
+        <label>Plafond (GNF, 0 = aucun)</label>
+        <input type="number" name="plafond" min="0" value="${escCp(v("plafond", 0))}" required />
+      </div>
+      <div class="field-row">
+        <label>Durée (mois, 0 = sans durée)</label>
+        <input type="number" name="duree_mois" min="0" value="${escCp(v("duree_mois", 0))}" required />
+      </div>
+      <div class="field-row">
+        <label>Règles de retrait</label>
+        <textarea name="regles_retrait" rows="2">${escCp(v("regles_retrait"))}</textarea>
+      </div>
+      <div class="field-row">
+        <label>Conditions de clôture</label>
+        <textarea name="conditions_cloture" rows="2">${escCp(v("conditions_cloture"))}</textarea>
+      </div>
+      <div class="field-row">
+        <label>Frais d'ouverture (GNF) — enregistré, pas encore appliqué</label>
+        <input type="number" name="frais_ouverture" min="0" value="${escCp(v("frais_ouverture", 0))}" required />
+      </div>
+      <div class="field-row">
+        <label>Rémunération annuelle (%) — enregistrée, pas encore appliquée</label>
+        <input type="number" name="taux_remuneration_annuel" min="0" step="0.01" value="${escCp(v("taux_remuneration_annuel", 0))}" required />
+      </div>
+      <div class="field-row">
+        <label>Statut</label>
+        <select name="statut" required>
+          <option value="inactif" ${v("statut", "inactif") === "inactif" ? "selected" : ""}>inactif</option>
+          <option value="actif" ${v("statut", "inactif") === "actif" ? "selected" : ""}>actif</option>
+        </select>
+      </div>
+      <p id="produit-cp-erreur" class="subtitle-sm" style="color:#c0392b;"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-ghost-sm" id="modal-annuler" style="flex:1;">Annuler</button>
+        <button type="submit" class="btn btn-primary" style="flex:1;">Enregistrer</button>
+      </div>
+    </form>
+  `);
+  document.getElementById("modal-annuler").addEventListener("click", fermerModal);
+  document.getElementById("form-produit-cp").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const erreurZone = document.getElementById("produit-cp-erreur");
+    erreurZone.textContent = "";
+
+    const codeProduit = p
+      ? p.id
+      : String(fd.get("code") || "").trim().toUpperCase().replace(/[^A-Z0-9_]+/g, "_").replace(/^_+|_+$/g, "");
+    if (!/^[A-Z0-9_]{3,50}$/.test(codeProduit)) {
+      erreurZone.textContent = "Code invalide : 3 à 50 caractères (lettres, chiffres, _).";
+      return;
+    }
+    if (!p && cpPas.produits.some((x) => x.id === codeProduit)) {
+      erreurZone.textContent = "Ce code existe déjà.";
+      return;
+    }
+
+    const donnees = {
+      code: codeProduit,
+      nom: String(fd.get("nom") || "").trim(),
+      type: fd.get("type"),
+      objectif: String(fd.get("objectif") || "").trim(),
+      depot_minimum: Number(fd.get("depot_minimum") || 0),
+      solde_minimum: Number(fd.get("solde_minimum") || 0),
+      plafond: Number(fd.get("plafond") || 0),
+      duree_mois: Number(fd.get("duree_mois") || 0),
+      regles_retrait: String(fd.get("regles_retrait") || "").trim(),
+      conditions_cloture: String(fd.get("conditions_cloture") || "").trim(),
+      frais_ouverture: Number(fd.get("frais_ouverture") || 0),
+      taux_remuneration_annuel: Number(fd.get("taux_remuneration_annuel") || 0),
+      statut: fd.get("statut") === "actif" ? "actif" : "inactif",
+      version: p ? Number(p.version || 1) + 1 : 1,
+      date_effet: new Date().toISOString().slice(0, 10),
+      approuve_par: state.currentUser.uid,
+      date_creation: p && p.date_creation ? p.date_creation : serverTimestamp(),
+      date_maj: serverTimestamp(),
+    };
+    if (!donnees.nom) {
+      erreurZone.textContent = "Le nom est obligatoire.";
+      return;
+    }
+    try {
+      await setDoc(doc(db, "produits_epargne", codeProduit), donnees);
+      notifier("Produit enregistré (version " + donnees.version + ").", "succes");
+      fermerModal();
+    } catch (err) {
+      console.error(err);
+      notifier("Erreur : " + err.message, "erreur");
+    }
+  });
+}
+
+async function lancerVerificationIntegrite() {
+  if (cpPas.integriteEnCours) return;
+  const mod = await obtenirModuleCpPas();
+  if (!mod) {
+    notifier("Module CP-PAS indisponible : vérifiez que cp-pas-commun.js est bien publié.", "erreur");
+    return;
+  }
+  cpPas.integriteEnCours = true;
+  cpPas.integrite = null;
+  renderCpPasPdg();
+  try {
+    cpPas.integrite = await mod.verifierIntegriteGrandLivre();
+  } catch (err) {
+    console.error(err);
+    notifier("Erreur de vérification : " + err.message, "erreur");
+  } finally {
+    cpPas.integriteEnCours = false;
+    renderCpPasPdg();
+  }
+}
+
+demarrer();
+// === FIN PDG — PARTIE 3/3 ===
